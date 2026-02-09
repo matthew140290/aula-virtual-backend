@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "es2016",      /* El estándar de JavaScript al que se compilará */
+    "module": "commonjs",     /* El sistema de módulos a usar */
+    "rootDir": "./src",       /* Donde estará nuestro código TypeScript */
+    "outDir": "./dist",       /* Donde se guardará el código JavaScript compilado */
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,           /* Habilita todas las comprobaciones de tipo estrictas */
+    "skipLibCheck": true
+  }
+}
