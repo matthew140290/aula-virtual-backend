@@ -4,13 +4,20 @@ import { dbConfig } from '../config/database';
 
 // Obtiene todos los datos de un usuario por su código
 export const findUserById = async (codigo: number, perfil: string) => {
-    console.log(`--- Servicio findUserById: Buscando perfil para código: ${codigo}, perfil: ${perfil} ---`);
+    const perfilNorm = perfil ? perfil.toLowerCase().trim() : '';
+    const codigoBusqueda = Math.abs(codigo);
+
+    console.log(`🔍 [SERVICE PERFIL] Inicio análisis...`);
+    console.log(`   - Input Original: ID=${codigo}, Perfil='${perfil}'`);
+    console.log(`   - Input Normalizado: ID=${codigoBusqueda}, Perfil='${perfilNorm}'`);
+
+    
     const pool = await sql.connect(dbConfig);
     let query: string;
     let idType: sql.ISqlType;
     
 
-    if (perfil === 'Estudiante') {
+    if (perfilNorm === 'estudiante') {
         // Si es estudiante, buscamos en la tabla Estudiantes.
         query = `
             SELECT 
@@ -31,7 +38,7 @@ export const findUserById = async (codigo: number, perfil: string) => {
             WHERE MatrículaNo = @codigo;
         `;
         idType = sql.Int();
-    } else if (perfil.includes('Docente') || perfil.includes('Director')) {
+    } else if (perfilNorm.includes('docente') || perfilNorm.includes('director')) {
         // Si es docente, buscamos en la tabla Docentes.
         query = `
             SELECT 
@@ -61,7 +68,7 @@ export const findUserById = async (codigo: number, perfil: string) => {
 
     const result = await pool.request()
         // 💡 2. Usamos el tipo de dato SQL determinado por el perfil.
-        .input('codigo', idType, codigo)
+        .input('codigo', idType, codigoBusqueda)
         .query(query);
             
     return result.recordset[0];
@@ -70,6 +77,7 @@ export const findUserById = async (codigo: number, perfil: string) => {
 // Actualiza o inserta la foto de perfil (lógica de "UPSERT")
 export const updateUserPhoto = async (codigo: number, perfil: string, photoBuffer: Buffer) => {
     const pool = await sql.connect(dbConfig);
+    const codigoBusqueda = Math.abs(codigo);
     
     const esDocente = perfil.includes('Docente') || perfil.includes('Director');
     const photoTable = esDocente ? 'dbo.FotografíasDocentes' : 'dbo.FotografíasEstudiantes';
@@ -77,7 +85,7 @@ export const updateUserPhoto = async (codigo: number, perfil: string, photoBuffe
     const idType = esDocente ? sql.SmallInt() : sql.Int();
 
     await pool.request()
-        .input('id', idType, codigo)
+        .input('id', idType, codigoBusqueda)
         .input('imagen', sql.VarBinary, photoBuffer)
         .query(`
             MERGE INTO ${photoTable} AS T
@@ -92,13 +100,14 @@ export const updateUserPhoto = async (codigo: number, perfil: string, photoBuffe
 
 export const findUserPhotoById = async (codigo: number, perfil: string) => {
     const pool = await sql.connect(dbConfig);
+    const codigoBusqueda = Math.abs(codigo);
     const esDocente = perfil.includes('Docente') || perfil.includes('Director');
     const photoTable = esDocente ? 'dbo.FotografíasDocentes' : 'dbo.FotografíasEstudiantes';
     const idColumn = esDocente ? 'CódigoDocente' : 'MatrículaNo';
     const idType = esDocente ? sql.SmallInt() : sql.Int();
 
     const result = await pool.request()
-        .input('id', idType, codigo)
+        .input('id', idType, codigoBusqueda)
         .query(`SELECT Imagen FROM ${photoTable} WHERE ${idColumn} = @id`);
 
     if (result.recordset.length > 0) {

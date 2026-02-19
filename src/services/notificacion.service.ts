@@ -27,6 +27,8 @@ export const getNotificaciones = async (userIdentity: UserIdentity, page: number
     const pool = await sql.connect(dbConfig);
     const offset = (page - 1) * limit;
 
+    const idPositivo = Math.abs(userIdentity.codigo);
+
     const query = `
         SELECT 
             n.NotificacionID, n.Tipo, n.Mensaje, n.RecursoID, 
@@ -65,16 +67,19 @@ export const getNotificaciones = async (userIdentity: UserIdentity, page: number
         LEFT JOIN Virtual.Pruebas p ON r.RecursoID = p.RecursoID
         LEFT JOIN Virtual.Anuncios an ON r.RecursoID = an.RecursoID
         LEFT JOIN Virtual.Videoconferencias vid ON r.RecursoID = vid.RecursoID
-        WHERE n.UsuarioID = @codigoUsuario AND n.PerfilUsuario = @perfilUsuario
+        WHERE (n.UsuarioID = @idPositivo OR n.UsuarioID = (@idPositivo * -1))
+          AND n.PerfilUsuario = @perfilUsuario
+
         ORDER BY n.FechaCreacion DESC
         OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
 
         SELECT COUNT(*) as total FROM Virtual.Notificaciones
-        WHERE UsuarioID = @codigoUsuario AND PerfilUsuario = @perfilUsuario;
+        WHERE (UsuarioID = @idPositivo OR UsuarioID = (@idPositivo * -1)) 
+          AND PerfilUsuario = @perfilUsuario;
     `;
 
     const result = await pool.request()
-        .input('codigoUsuario', sql.SmallInt, userIdentity.codigo)
+        .input('idPositivo', sql.Int, idPositivo)
         .input('perfilUsuario', sql.NVarChar(96), userIdentity.perfil)
         .input('offset', sql.Int, offset)
         .input('limit', sql.Int, limit)
@@ -92,14 +97,17 @@ export const getNotificaciones = async (userIdentity: UserIdentity, page: number
 
 export const marcarComoLeidas = async (userIdentity: UserIdentity, ids?: number[]) => {
     const pool = await sql.connect(dbConfig);
+    const idPositivo = Math.abs(userIdentity.codigo);
     let query = `
         UPDATE Virtual.Notificaciones 
         SET Leido = 1 
-        WHERE UsuarioID = @codigoUsuario AND PerfilUsuario = @perfilUsuario AND Leido = 0
+        WHERE (UsuarioID = @idPositivo OR UsuarioID = (@idPositivo * -1))
+          AND PerfilUsuario = @perfilUsuario 
+          AND Leido = 0
     `;
     
     const request = pool.request()
-        .input('codigoUsuario', sql.SmallInt, userIdentity.codigo)
+        .input('idPositivo', sql.Int, idPositivo)
         .input('perfilUsuario', sql.NVarChar(96), userIdentity.perfil);
 
     if (ids && ids.length > 0) {
@@ -239,11 +247,13 @@ export const notificarEstudiantesDeCurso = async (
             e.TeléfonoMadre,
             e.TeléfonoPadre,
             e.NombreCompletoAcudiente,
-            asig.Descripción as NombreAsignatura
+            asig.Descripción as NombreAsignatura,
+            u.Código AS ID_Usuario_Real
         FROM Virtual.Apartados ap
         JOIN Virtual.Semanas sem ON ap.SemanaID = sem.SemanaID
         JOIN dbo.Asignaturas asig ON sem.CodigoAsignatura = asig.Código
         JOIN dbo.Estudiantes e ON asig.CódigoCurso = e.CódigoCurso
+        LEFT JOIN dbo.Usuarios u ON (e.MatrículaNo = u.Código OR e.MatrículaNo = (u.Código * -1))
         WHERE ap.ApartadoID = @apartadoId
           AND (e.Estado IS NULL OR e.Estado != 'Retirado')
     `;
@@ -276,28 +286,37 @@ export const notificarEstudiantesDeCurso = async (
 
     const mensaje = `Nuevo(a) ${tipo.toLowerCase()} publicado: "${tituloRecurso}"`;
     const now = new Date();
+    let insertCount = 0;
 
     estudiantes.forEach((est: any) => {
-        table.rows.add(
-            est.MatrículaNo, 
-            'Estudiante', 
-            tipo, // Ej: 'NUEVA_TAREA'
-            mensaje, 
-            recursoId, 
-            now, 
-            0, // No leido
-            actor.codigo, 
-            actor.perfil
-        );
+        // 🔥 VALIDACIÓN: Solo insertamos si el estudiante tiene un Usuario asociado
+        // De lo contrario, la FK fallaría y rompería todo el proceso.
+        if (est.ID_Usuario_Real) {
+            table.rows.add(
+                est.ID_Usuario_Real, // Usamos el ID negativo (-244)
+                'Estudiante', 
+                tipo, 
+                mensaje, 
+                recursoId, 
+                now, 
+                0, 
+                actor.codigo, 
+                actor.perfil
+            );
+            insertCount++;
+        }
     });
 
-    const req = new sql.Request(pool);
-    try {
-        await req.bulk(table);
-        console.log(`Notificaciones enviadas a ${estudiantes.length} estudiantes.`);
-    } catch (err) {
-        console.error("Error enviando notificaciones masivas:", err);
-        // No lanzamos error para no revertir la creación del recurso, es un proceso secundario
+    if (insertCount > 0) {
+        const req = new sql.Request(pool);
+        try {
+            await req.bulk(table);
+            console.log(`✅ [Notificación] Insertadas ${insertCount} notificaciones en BD.`);
+        } catch (err) {
+            console.error("❌ [Notificación] Error fatal en Bulk Insert:", err);
+        }
+    } else {
+        console.warn("⚠️ [Notificación] Se encontraron estudiantes pero ninguno tiene Usuario asociado en BD. No se enviaron notificaciones internas.");
     }
 
     if (target === 'NONE') {
@@ -377,18 +396,19 @@ export const notificarEstudiantesDeCurso = async (
 
 export const deleteNotificaciones = async (userIdentity: UserIdentity, ids?: number[]) => {
     const pool = await sql.connect(dbConfig);
+    const idPositivo = Math.abs(userIdentity.codigo);
+
     const request = pool.request()
-        .input('codigoUsuario', sql.SmallInt, userIdentity.codigo)
+        .input('idPositivo', sql.SmallInt, idPositivo)
         .input('perfilUsuario', sql.NVarChar(96), userIdentity.perfil);
 
     let query = `
         DELETE FROM Virtual.Notificaciones 
-        WHERE UsuarioID = @codigoUsuario AND PerfilUsuario = @perfilUsuario
+        WHERE (UsuarioID = @idPositivo OR UsuarioID = (@idPositivo * -1))
+          AND PerfilUsuario = @perfilUsuario
     `;
 
-    // Si vienen IDs, borramos solo esos. Si no vienen, borramos TODO (Vaciar bandeja).
     if (ids && ids.length > 0) {
-        // Parametrización dinámica para evitar SQL Injection en Arrays
         const idParams = ids.map((_, i) => `@idDelete${i}`).join(',');
         query += ` AND NotificacionID IN (${idParams})`;
         ids.forEach((id, i) => request.input(`idDelete${i}`, sql.Int, id));

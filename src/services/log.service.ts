@@ -10,6 +10,11 @@ export const registrarAccion = async (
     opcion: string,
     operacion: string
 ) => {
+    if (!codigoUsuario && codigoUsuario !== 0) {
+        console.warn('--- LOGGING ABORTADO: Código de usuario inválido ---');
+        return;
+    }
+
     const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
 
@@ -30,7 +35,7 @@ export const registrarAccion = async (
 
         // 4. Realizar la inserción, AHORA INCLUYENDO el 'Código' que calculamos.
         await request
-            .input('codigo', sql.SmallInt, newCodigo)
+            .input('codigo', sql.Int, newCodigo)
             .input('codigoUsuario', sql.SmallInt, codigoUsuario)
             .input('perfilUsuario', sql.NVarChar(96), perfil)
             .input('menu', sql.NVarChar(96), menu)
@@ -50,7 +55,9 @@ export const registrarAccion = async (
         console.log(`--- LOGGING: Acción registrada exitosamente para el usuario ${codigoUsuario}. ---`);
 
     } catch (error) {
-        await transaction.rollback();
-       console.error('--- ERROR FATAL AL REGISTRAR ACCIÓN ---:', error);
+        try { await transaction.rollback(); } catch(e) {}
+       console.error('--- ERROR NO LETAL EN LOGGING ---');
+        console.error('Mensaje:', error);
+        console.error('Causa probable: El usuario ID ' + codigoUsuario + ' no existe en la tabla dbo.Usuarios (Fallo de FK).');
     }
 };

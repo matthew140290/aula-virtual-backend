@@ -39,7 +39,7 @@ export const findEstudiantesByAsignatura = async (codigoAsignatura: number): Pro
         .input('codigoAsignatura', sql.SmallInt, codigoAsignatura)
         .query(`
             SELECT 
-                e.MatrículaNo as id,
+                e.[MatrículaNo] as id,
                 LTRIM(RTRIM(CONCAT(
                     e.PrimerApellido, ' ', e.SegundoApellido, ' ', 
                     e.PrimerNombre, ' ', e.SegundoNombre
@@ -54,34 +54,55 @@ export const findEstudiantesByAsignatura = async (codigoAsignatura: number): Pro
 };
 
 export const findAsignaturasByEstudiante = async (matriculaNo: number) => {
-    const pool = await poolPromise;
-    const result = await pool.request()
-        .input('matriculaNo', sql.Int, matriculaNo)
-        .query(`
-            SELECT 
-                asig.Código AS CodigoAsignatura,
-                asig.Descripción AS NombreAsignatura,
-                cur.Curso AS NombreCurso,
-                g.Descripción AS NombreGrado,
-                doc.PrimerNombre + ' ' + doc.PrimerApellido AS NombreDocente
-            FROM dbo.Estudiantes e
-            JOIN dbo.Asignaturas asig ON e.CódigoCurso = asig.CódigoCurso
-            JOIN dbo.Cursos cur ON asig.CódigoCurso = cur.Código
-            JOIN dbo.Grados g ON cur.CódigoGrado = g.Código
-            -- Usamos un LEFT JOIN para el docente en caso de que no haya uno asignado
-            LEFT JOIN dbo.AsignaciónAcadémica aa ON asig.Código = aa.CódigoAsignatura
-            LEFT JOIN dbo.Docentes doc ON aa.CódigoDocente = doc.Código
-            WHERE e.MatrículaNo = @matriculaNo
-            ORDER BY asig.Descripción;
-        `);
-    return result.recordset;
+    // 1. Log de entrada: ¿Qué ID estamos recibiendo?
+    const idBusqueda = Math.abs(matriculaNo); 
+    //console.log(`🔍 [SERVICE] findAsignaturasByEstudiante -> ID Original: ${matriculaNo} | ID Búsqueda (Abs): ${idBusqueda}`);
+
+    try {
+        const pool = await poolPromise;
+        const result = await pool.request()
+            .input('matriculaNo', sql.Int, idBusqueda)
+            .query(`
+                SELECT 
+                    asig.Código AS CodigoAsignatura,
+                    asig.Descripción AS NombreAsignatura,
+                    ISNULL(cur.Curso, 'Sin Curso Def.') AS NombreCurso,
+                    ISNULL(g.Descripción, 'Sin Grado Def.') AS NombreGrado,
+                    LTRIM(RTRIM(ISNULL(doc.PrimerNombre, '') + ' ' + ISNULL(doc.PrimerApellido, 'Docente Pendiente'))) AS NombreDocente
+                FROM dbo.Estudiantes e
+                JOIN dbo.Asignaturas asig ON e.CódigoCurso = asig.CódigoCurso
+                LEFT JOIN dbo.Cursos cur ON asig.CódigoCurso = cur.Código
+                LEFT JOIN dbo.Grados g ON cur.CódigoGrado = g.Código
+                LEFT JOIN dbo.AsignaciónAcadémica aa ON asig.Código = aa.CódigoAsignatura
+                LEFT JOIN dbo.Docentes doc ON aa.CódigoDocente = doc.Código
+                WHERE e.[MatrículaNo] = @matriculaNo
+                ORDER BY asig.Descripción;
+            `);
+
+        // 2. Log de salida: ¿Qué encontró la base de datos?
+        //console.log(`✅ [SERVICE] Resultados encontrados: ${result.recordset.length}`);
+        if (result.recordset.length === 0) {
+            console.warn(`⚠️ [SERVICE] ¡ALERTA! La consulta no devolvió asignaturas para el estudiante ${idBusqueda}.`);
+        } else {
+            //console.log(`📦 [SERVICE] Ejemplo fila 1:`, result.recordset[0]);
+        }
+
+        return result.recordset;
+
+    } catch (error) {
+        console.error(`❌ [SERVICE] Error CRÍTICO en SQL:`, error);
+        throw error;
+    }
 };
 
 
 export const findEventosProximosByEstudiante = async (matriculaNo: number) => {
     const pool = await poolPromise;
+
+    const idPositivo = Math.abs(matriculaNo);
+
     const result = await pool.request()
-        .input('matriculaNo', sql.Int, matriculaNo)
+        .input('matriculaNo', sql.Int, idPositivo)
         .query(`
             SELECT TOP 20
                 r.RecursoID as id,
@@ -128,10 +149,15 @@ export const findEventosProximosByEstudiante = async (matriculaNo: number) => {
             LEFT JOIN Virtual.Anuncios an ON r.RecursoID = an.RecursoID
             LEFT JOIN Virtual.Videoconferencias vid ON r.RecursoID = vid.RecursoID
 
-            WHERE e.MatrículaNo = @matriculaNo
+            LEFT JOIN dbo.Usuarios u ON (e.MatrículaNo = u.Código OR e.MatrículaNo = (u.Código * -1))
+
+            WHERE e.[MatrículaNo] = @matriculaNo
               AND r.Visible = 1
               AND r.RecursoID NOT IN (
-                  SELECT RecursoID FROM Virtual.EventosOcultos WHERE MatriculaNo = @matriculaNo
+                  SELECT RecursoID 
+                  FROM Virtual.EventosOcultos 
+                  WHERE (UsuarioID = @matriculaNo OR UsuarioID = u.Código) 
+                  AND PerfilUsuario = 'Estudiante'
               )
             ORDER BY r.FechaCreacion DESC
         `);
@@ -140,15 +166,21 @@ export const findEventosProximosByEstudiante = async (matriculaNo: number) => {
 
 export const ocultarEventoEstudiante = async (matriculaNo: number, recursoId: number) => {
     const pool = await poolPromise;
-    // Usamos MERGE o IF NOT EXISTS para evitar error si le dan doble click
+    const idPositivo = Math.abs(matriculaNo);
+    const userCheck = await pool.request()
+        .input('matricula', sql.Int, idPositivo)
+        .query(`SELECT Código FROM dbo.Usuarios WHERE Código = @matricula OR Código = (@matricula * -1)`);
+    
+        const idParaInsertar = userCheck.recordset.length > 0 ? userCheck.recordset[0].Código : idPositivo;
+
     await pool.request()
-        .input('matriculaNo', sql.Int, matriculaNo)
+        .input('matriculaNo', sql.Int, idParaInsertar)
         .input('recursoId', sql.Int, recursoId)
         .query(`
-            IF NOT EXISTS (SELECT 1 FROM Virtual.EventosOcultos WHERE MatriculaNo = @matriculaNo AND RecursoID = @recursoId)
+            IF NOT EXISTS (SELECT 1 FROM Virtual.EventosOcultos WHERE UsuarioID = @userId AND PerfilUsuario = 'Estudiante' AND RecursoID = @recursoId)
             BEGIN
-                INSERT INTO Virtual.EventosOcultos (MatriculaNo, RecursoID)
-                VALUES (@matriculaNo, @recursoId)
+                INSERT INTO Virtual.EventosOcultos (UsuarioID, PerfilUsuario, RecursoID, FechaOculto)
+                VALUES (@userId, 'Estudiante', @recursoId, getdate())
             END
         `);
     return { success: true };

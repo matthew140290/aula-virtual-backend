@@ -42,8 +42,8 @@ export const login = async (req: Request, res: Response) => {
             perfil: validUser.Perfil
            };
 
-        const operacionExitosa = `El usuario ha iniciado sesión exitosamente.`;
-        await registrarAccion(tokenPayload.codigo, tokenPayload.perfil, 'Sistema Aula Virtual', 'Inicio  de Sesión', operacionExitosa);
+        registrarAccion(validUser.Codigo, validUser.Perfil, 'Sistema Aula', 'Login', 'Inicio exitoso Docente')
+                .catch(err => console.error("Error no bloqueante en log:", err.message));
         
 
         const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' });
@@ -67,8 +67,8 @@ export const login = async (req: Request, res: Response) => {
                 numeroDocumento: student.NumeroDocumento
             };
 
-            const operacionExitosa = `El estudiante ha iniciado sesión exitosamente.`;
-            await registrarAccion(tokenPayload.codigo, tokenPayload.perfil, 'Sistema Aula Virtual', 'Inicio de Sesión', operacionExitosa);
+            registrarAccion(student.CodigoLog, student.Perfil, 'Sistema Aula', 'Login', 'Inicio exitoso Estudiante')
+                .catch(err => console.error("⚠️ Error al registrar log (Login continúa):", err.message));
 
             const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' });
             return res.status(200).json({
@@ -78,7 +78,8 @@ export const login = async (req: Request, res: Response) => {
             });
         }
         
-        await registrarAccion(0, 'Desconocido', 'Sistema Aula', 'Login', `Intento de inicio de sesión fallido para: ${nombre}`);
+        registrarAccion(0, 'Desconocido', 'Sistema Aula', 'Login', `Fallo login: ${nombre}`)
+            .catch(() => {});
         return res.status(401).json({ message: 'Usuario o contraseña incorrecta.' });
 
     } catch (error) {

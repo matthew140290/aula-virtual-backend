@@ -38,7 +38,7 @@ export const getMiFoto = async (req: Request, res: Response) => {
             res.set('Content-Type', 'image/jpeg'); // O el tipo de imagen que guardes
             res.send(photoBuffer);
         } else {
-            res.status(404).json({ message: 'Foto no encontrada.' });
+            res.status(204).send();
         }
     } catch (error) {
         res.status(500).json({ message: 'Error interno del servidor.' });

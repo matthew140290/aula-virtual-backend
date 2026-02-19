@@ -5,6 +5,7 @@ import { poolPromise } from '../config/dbPool'; // Crearemos este archivo ahora
 // Interfaz para definir la estructura de un usuario de nuestra BD
 export interface User {
   Codigo: number;
+  CodigoLog: number;
   Nombre: string;
   NombreCompleto: string;
   Contrasena: string; 
@@ -28,6 +29,7 @@ export const findUserByName = async (nombre: string): Promise<User[]> => {
     
     const users: User[] = result.recordset.map(dbUser => ({
         Codigo: dbUser.Código,
+        CodigoLog: dbUser.Código,
         Nombre: dbUser.Nombre,
         NombreCompleto: dbUser.NombreCompleto,
         Contrasena: dbUser.Contraseña,
@@ -55,6 +57,7 @@ export const findUserById = async (codigo: number): Promise<User | null> => {
         const dbUser = result.recordset[0];
         const user: User = {
             Codigo: dbUser.Código,
+            CodigoLog: dbUser.Código,
             Nombre: dbUser.Nombre,
             NombreCompleto: dbUser.NombreCompleto,
             Contrasena: dbUser.Contraseña,
@@ -78,15 +81,20 @@ export const findStudentForLogin = async (nombre: string, matricula: string): Pr
             // 💡 2. La consulta SQL ahora busca por 'PrimerNombre' en lugar del nombre completo.
             .query(`
                 SELECT 
-                    E.MatrículaNo,
+                    E.[MatrículaNo],
                     LTRIM(RTRIM(CONCAT(PrimerApellido, ' ', SegundoApellido, ' ', PrimerNombre, ' ', SegundoNombre))) AS NombreCompleto,
                     E.PrimerNombre AS Nombre,
                     U.Perfil,
-                    E.NúmeroDocumento
+                    E.NúmeroDocumento,
+                    U.Código AS CodigoUsuarioReal
                 FROM dbo.Estudiantes E
-                INNER JOIN dbo.Usuarios U ON E.MatrículaNo = U.Código
+                LEFT JOIN dbo.Usuarios U ON (E.[MatrículaNo] = U.Código OR E.[MatrículaNo] = (U.Código * -1))
                 WHERE E.PrimerNombre = @primerNombre
-                  AND E.MatrículaNo = @matriculaNo
+                  AND (
+                      E.[MatrículaNo] = @matriculaNo 
+                      OR 
+                      E.[MatrículaNo] = (@matriculaNo * -1)
+                  )
                   AND (E.Estado IS NULL OR E.Estado != 'Retirado');
             `);
 
@@ -96,11 +104,16 @@ export const findStudentForLogin = async (nombre: string, matricula: string): Pr
 
         const dbStudent = result.recordset[0];
 
+        const perfil = dbStudent.Perfil || 'Estudiante';
+
+        const codigoLog = dbStudent.CodigoUsuarioReal ? dbStudent.CodigoUsuarioReal : 0;
+
         const studentUser: User = {
             Codigo: dbStudent.MatrículaNo,
+            CodigoLog: codigoLog,
             Nombre: dbStudent.Nombre,
             NombreCompleto: dbStudent.NombreCompleto,
-            Perfil: dbStudent.Perfil,
+            Perfil: perfil,
             Contrasena: '',
             NumeroDocumento: dbStudent.NúmeroDocumento
         };

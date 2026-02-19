@@ -29,7 +29,7 @@ const PORT = process.env.PORT || 3001;
 // Define las URLs que tendrán permiso para acceder a tu API
 // const whitelist = ['http://localhost:3001', 'http://localhost:5173'];
 // const whitelist = ['https://aula-vitual.plataformaangela.com'];
-const whitelist = ['https://jerusalen.aula-virtual.plataformaangela.com'];
+const whitelist = ['https://glenn.aula-virtual.plataformaangela.com'];
 
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {

@@ -17,12 +17,23 @@ export const getEstudiantesPorAsignatura = async (req: Request, res: Response) =
 };
 
 export const getMisAsignaturas = async (req: Request, res: Response) => {
+    //console.log('--- 🚀 [CONTROLLER] Iniciando getMisAsignaturas ---');
     try {
-        if (!req.user) return res.status(401).json({ message: 'No autorizado.' });
+        if (!req.user) {
+            console.error('❌ [CONTROLLER] No hay usuario en req.user (Token inválido o middleware falló)');
+            return res.status(401).json({ message: 'No autorizado.' });
+        }
+
+        //console.log('👤 [CONTROLLER] Usuario solicitante:', req.user);
+
+        // Llamamos al servicio
         const asignaturas = await estudianteService.findAsignaturasByEstudiante(req.user.codigo);
+        
+        //console.log(`📤 [CONTROLLER] Enviando respuesta JSON con ${asignaturas.length} asignaturas.`);
         res.status(200).json(asignaturas);
+
     } catch (error) {
-        console.error('Error al obtener las asignaturas del estudiante:', error);
+        console.error('❌ [CONTROLLER] Error capturado:', error);
         res.status(500).json({ message: 'Error interno del servidor.' });
     }
 };

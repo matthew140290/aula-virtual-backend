@@ -1,22 +1,4 @@
 // src/config/database.ts
-// import sql from 'mssql';
-// import dotenv from 'dotenv';
-
-// dotenv.config();
-
-// // Exportamos la configuración para que el servicio la pueda usar
-// export const dbConfig: sql.config = {
-//   user: process.env.DB_USER,
-//   password: process.env.DB_PASSWORD,
-//   server: process.env.DB_SERVER!,
-//   database: process.env.DB_DATABASE,
-//   options: {
-//     encrypt: false, // Cambiar a true si usas Azure SQL
-//     trustServerCertificate: true // Necesario para conexiones locales con certificados auto-firmados
-//   }
-// };
-
-// src/config/database.ts
 import sql from 'mssql';
 import dotenv from 'dotenv';
 
