@@ -33,11 +33,39 @@ export interface VistaEstudianteDTO {
     };
 }
 
-export const findEstudiantesByAsignatura = async (codigoAsignatura: number): Promise<Student[]> => {
+export interface StudentRow {
+    id: number;
+    name: string;
+}
+
+export interface AsignaturaEstudianteRow {
+    CodigoAsignatura: number;
+    NombreAsignatura: string;
+    NombreCurso: string;
+    NombreGrado: string;
+    NombreDocente: string;
+}
+
+export interface EventoProximoRow {
+    id: number;
+    tipo: string;
+    titulo: string;
+    nombreAsignatura: string;
+    nombreDocente: string;
+    fechaPublicacion: Date;
+    fechaFinal: Date | null;
+}
+
+export interface ContextoAcademicoRow {
+    NombreGrado: string;
+    NombreCurso: string;
+}
+
+export const findEstudiantesByAsignatura = async (codigoAsignatura: number): Promise<StudentRow[]> => {
     const pool = await poolPromise;
     const result = await pool.request()
         .input('codigoAsignatura', sql.SmallInt, codigoAsignatura)
-        .query(`
+        .query<StudentRow>(`
             SELECT 
                 e.[MatrículaNo] as id,
                 LTRIM(RTRIM(CONCAT(
@@ -53,16 +81,14 @@ export const findEstudiantesByAsignatura = async (codigoAsignatura: number): Pro
     return result.recordset;
 };
 
-export const findAsignaturasByEstudiante = async (matriculaNo: number) => {
-    // 1. Log de entrada: ¿Qué ID estamos recibiendo?
+export const findAsignaturasByEstudiante = async (matriculaNo: number): Promise<AsignaturaEstudianteRow[]> => {
     const idBusqueda = Math.abs(matriculaNo); 
-    //console.log(`🔍 [SERVICE] findAsignaturasByEstudiante -> ID Original: ${matriculaNo} | ID Búsqueda (Abs): ${idBusqueda}`);
 
     try {
         const pool = await poolPromise;
         const result = await pool.request()
             .input('matriculaNo', sql.Int, idBusqueda)
-            .query(`
+            .query<AsignaturaEstudianteRow>(`
                 SELECT 
                     asig.Código AS CodigoAsignatura,
                     asig.Descripción AS NombreAsignatura,
@@ -79,8 +105,6 @@ export const findAsignaturasByEstudiante = async (matriculaNo: number) => {
                 ORDER BY asig.Descripción;
             `);
 
-        // 2. Log de salida: ¿Qué encontró la base de datos?
-        //console.log(`✅ [SERVICE] Resultados encontrados: ${result.recordset.length}`);
         if (result.recordset.length === 0) {
             console.warn(`⚠️ [SERVICE] ¡ALERTA! La consulta no devolvió asignaturas para el estudiante ${idBusqueda}.`);
         } else {
@@ -96,14 +120,14 @@ export const findAsignaturasByEstudiante = async (matriculaNo: number) => {
 };
 
 
-export const findEventosProximosByEstudiante = async (matriculaNo: number) => {
+export const findEventosProximosByEstudiante = async (matriculaNo: number): Promise<EventoProximoRow[]> => {
     const pool = await poolPromise;
 
     const idPositivo = Math.abs(matriculaNo);
 
     const result = await pool.request()
         .input('matriculaNo', sql.Int, idPositivo)
-        .query(`
+        .query<EventoProximoRow>(`
             SELECT TOP 20
                 r.RecursoID as id,
                 r.TipoRecurso as tipo,
@@ -164,12 +188,12 @@ export const findEventosProximosByEstudiante = async (matriculaNo: number) => {
     return result.recordset;
 };
 
-export const ocultarEventoEstudiante = async (matriculaNo: number, recursoId: number) => {
+export const ocultarEventoEstudiante = async (matriculaNo: number, recursoId: number): Promise<{ success: boolean }> => {
     const pool = await poolPromise;
     const idPositivo = Math.abs(matriculaNo);
     const userCheck = await pool.request()
         .input('matricula', sql.Int, idPositivo)
-        .query(`SELECT Código FROM dbo.Usuarios WHERE Código = @matricula OR Código = (@matricula * -1)`);
+        .query<{ Código: number }>(`SELECT Código FROM dbo.Usuarios WHERE Código = @matricula OR Código = (@matricula * -1)`);
     
         const idParaInsertar = userCheck.recordset.length > 0 ? userCheck.recordset[0].Código : idPositivo;
 
@@ -186,11 +210,11 @@ export const ocultarEventoEstudiante = async (matriculaNo: number, recursoId: nu
     return { success: true };
 };
 
-export const findContextoAcademicoByDocente = async (codigoDocente: number) => {
+export const findContextoAcademicoByDocente = async (codigoDocente: number): Promise<ContextoAcademicoRow | null> => {
     const pool = await poolPromise;
     const result = await pool.request()
         .input('codigoDocente', sql.SmallInt, codigoDocente)
-        .query(`
+        .query<ContextoAcademicoRow>(`
             SELECT TOP 1
                 g.Descripción AS NombreGrado,
                 c.Curso AS NombreCurso

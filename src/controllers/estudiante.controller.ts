@@ -1,6 +1,8 @@
  // src/controllers/estudiante.controller.ts
 import { Request, Response } from 'express';
 import * as estudianteService from '../services/estudiante.service';
+import { asyncHandler } from '../utils/asyncHandler';
+
 
 export const getEstudiantesPorAsignatura = async (req: Request, res: Response) => {
     try {
@@ -16,41 +18,27 @@ export const getEstudiantesPorAsignatura = async (req: Request, res: Response) =
     }
 };
 
-export const getMisAsignaturas = async (req: Request, res: Response) => {
+export const getMisAsignaturas = asyncHandler(async (req: Request, res: Response) => {
     //console.log('--- 🚀 [CONTROLLER] Iniciando getMisAsignaturas ---');
-    try {
         if (!req.user) {
             console.error('❌ [CONTROLLER] No hay usuario en req.user (Token inválido o middleware falló)');
             return res.status(401).json({ message: 'No autorizado.' });
         }
-
-        //console.log('👤 [CONTROLLER] Usuario solicitante:', req.user);
-
-        // Llamamos al servicio
         const asignaturas = await estudianteService.findAsignaturasByEstudiante(req.user.codigo);
         
         //console.log(`📤 [CONTROLLER] Enviando respuesta JSON con ${asignaturas.length} asignaturas.`);
         res.status(200).json(asignaturas);
 
-    } catch (error) {
-        console.error('❌ [CONTROLLER] Error capturado:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+});
 
-export const getMisEventosProximos = async (req: Request, res: Response) => {
-    try {
+export const getMisEventosProximos = asyncHandler(async (req: Request, res: Response) => {
         if (!req.user) return res.status(401).json({ message: 'No autorizado.' });
         const eventos = await estudianteService.findEventosProximosByEstudiante(req.user.codigo);
-        res.status(200).json(eventos);
-    } catch (error) {
-        console.error('Error al obtener los eventos próximos:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
 
-export const ocultarEvento = async (req: Request, res: Response) => {
-    try {
+        res.status(200).json(eventos);
+});
+
+export const ocultarEvento = asyncHandler(async (req: Request, res: Response) => {
         const { codigo } = req.user!; // Viene de tu auth.middleware.ts (DecodedUserToken)
         const { recursoId } = req.body;
 
@@ -58,18 +46,13 @@ export const ocultarEvento = async (req: Request, res: Response) => {
             return res.status(400).json({ message: 'recursoId es requerido' });
         }
 
-        // 'codigo' en tu token de estudiante corresponde a 'MatriculaNo'
+
         await estudianteService.ocultarEventoEstudiante(codigo, recursoId);
 
         return res.json({ message: 'Evento ocultado' });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({ message: 'Error al ocultar evento' });
-    }
-};
+});
 
-export const getRecursoVista = async (req: Request, res: Response) => {
-    try {
+export const getRecursoVista = asyncHandler(async (req: Request, res: Response) => {
         const recursoId = Number(req.params.recursoId);
         const matriculaNo = req.user?.codigo;
 
@@ -80,8 +63,5 @@ export const getRecursoVista = async (req: Request, res: Response) => {
         if (!data) return res.status(404).json({ message: 'Recurso no encontrado' });
 
         res.json(data);
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Error al cargar el recurso.' });
-    }
-};
+
+});

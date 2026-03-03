@@ -1,12 +1,23 @@
 {
   "compilerOptions": {
-    "target": "es2016",      /* El estándar de JavaScript al que se compilará */
-    "module": "commonjs",     /* El sistema de módulos a usar */
-    "rootDir": "./src",       /* Donde estará nuestro código TypeScript */
-    "outDir": "./dist",       /* Donde se guardará el código JavaScript compilado */
+    "target": "ES2020",
+    "module": "commonjs",
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "strict": true,
     "esModuleInterop": true,
+    "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "strict": true,           /* Habilita todas las comprobaciones de tipo estrictas */
-    "skipLibCheck": true
+    "resolveJsonModule": true,
+    "typeRoots": [
+      "./node_modules/@types",
+      "./src/types"
+    ]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"],
+  "ts-node": {
+    "files": true
   }
 }
+

@@ -3,9 +3,9 @@ import { Request, Response } from 'express';
 import * as tareaService from '../services/tarea.service';
 import { uploadGeneral } from './recurso.controller';
 import { notificarDocentePorInteraccion } from '../services/notificacion.service';
+import { asyncHandler } from '../utils/asyncHandler';
 
-export const getEntregasPorTarea = async (req: Request, res: Response) => {
-    try {
+export const getEntregasPorTarea = asyncHandler(async (req: Request, res: Response) => {
         const recursoId = Number(req.params.id);
         if (isNaN(recursoId)) {
             return res.status(400).json({ message: 'El ID del recurso-tarea debe ser un número válido.' });
@@ -13,14 +13,9 @@ export const getEntregasPorTarea = async (req: Request, res: Response) => {
 
         const datosCalificacion = await tareaService.findEntregasByRecursoId(recursoId);
         res.status(200).json(datosCalificacion);
-    } catch (error) {
-        console.error('Error al obtener las entregas de la tarea:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+});
 
-export const guardarCalificacion = async (req: Request, res: Response) => {
-    try {
+export const guardarCalificacion = asyncHandler(async (req: Request, res: Response) => {
         const { tareaId, matriculaNo } = req.params;
         const { calificacion, comentariosProfesor } = req.body;
 
@@ -32,11 +27,7 @@ export const guardarCalificacion = async (req: Request, res: Response) => {
         });
         
         res.status(200).json({ message: 'Calificación guardada con éxito.' });
-    } catch (error) {
-        console.error('Error al guardar la calificación:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+});
 
 export const crearEntrega = (req: Request, res: Response) => {
     uploadGeneral(req, res, async (err: any) => {
@@ -81,8 +72,7 @@ export const crearEntrega = (req: Request, res: Response) => {
     });
 };
 
-export const descargarEntrega = async (req: Request, res: Response) => {
-    try {
+export const descargarEntrega = asyncHandler(async (req: Request, res: Response) => {
         const entregaId = Number(req.params.id);
         if (isNaN(entregaId)) return res.status(400).json({ message: 'ID inválido' });
 
@@ -92,16 +82,10 @@ export const descargarEntrega = async (req: Request, res: Response) => {
             return res.status(404).json({ message: 'El archivo no existe o está dañado.' });
         }
 
-        // Configurar headers para descarga
         res.setHeader('Content-Type', archivo.ArchivoMimeType || 'application/octet-stream');
         // encodeURIComponent evita errores con tildes o espacios
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(archivo.NombreArchivo)}"`);
         res.setHeader('Content-Length', archivo.ArchivoData.length);
 
         res.end(archivo.ArchivoData);
-
-    } catch (error) {
-        console.error('Error descargando entrega:', error);
-        res.status(500).json({ message: 'Error interno al descargar archivo.' });
-    }
-};
+});

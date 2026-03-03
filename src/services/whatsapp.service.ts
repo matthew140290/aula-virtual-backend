@@ -2,6 +2,7 @@
 import twilio from 'twilio';
 
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
+const templateNuevoRecursoSid = process.env.TWILIO_TEMPLATE_NUEVO_RECURSO_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const fromNumber = `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`;
 const countryCode = process.env.DEFAULT_COUNTRY_CODE || '+57';
@@ -12,13 +13,10 @@ const client = twilio(accountSid, authToken);
 const formatPhoneNumber = (phone: string | null | undefined): string | null => {
     if (!phone) return null;
     
-    // Eliminar caracteres no numéricos
     const cleaned = phone.replace(/\D/g, '');
 
-    // Validación básica (en Colombia móviles son 10 dígitos)
     if (cleaned.length < 10) return null; 
 
-    // Si ya tiene el código de país (ej: 57300...), lo dejamos, si no, lo agregamos
     if (cleaned.startsWith('57') && cleaned.length === 12) {
         return `whatsapp:+${cleaned}`;
     }
@@ -26,7 +24,7 @@ const formatPhoneNumber = (phone: string | null | undefined): string | null => {
     return `whatsapp:${countryCode}${cleaned}`;
 };
 
-export const sendWhatsAppMessage = async (to: string, body: string) => {
+export const sendWhatsAppMessage = async (to: string, contentVariablesJson: string) => {
     const formattedTo = formatPhoneNumber(to);
     
     if (!formattedTo) {
@@ -34,12 +32,19 @@ export const sendWhatsAppMessage = async (to: string, body: string) => {
         return null;
     }
 
+    if (!templateNuevoRecursoSid) {
+        console.error(`[WhatsApp] ❌ ERROR: Falta configurar TWILIO_TEMPLATE_NUEVO_RECURSO_SID en tu .env`);
+        return null;
+    }
+
     try {
         const message = await client.messages.create({
-            body: body,
             from: fromNumber,
-            to: formattedTo
+            to: formattedTo,
+            contentSid: templateNuevoRecursoSid,
+            contentVariables: contentVariablesJson
         });
+        console.log(`[WhatsApp] ✅ Template enviado a ${formattedTo}. SID: ${message.sid}`);
         return message.sid;
     } catch (error) {
         console.error(`[WhatsApp] Error enviando a ${formattedTo}:`, error);

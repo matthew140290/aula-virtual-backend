@@ -32,7 +32,7 @@ const defaultApartados = [
 ];
 
 // Obtener todas las semanas de una asignatura en un período
-export const findWeeksByCourseAndPeriod = async (codigoAsignatura: number, numeroPeriodo: number) => {
+export const findWeeksByCourseAndPeriod = async (codigoAsignatura: number, numeroPeriodo: number, usuarioId: number, perfil: string) => {
   let pool;
   try {
     const pool = await poolPromise;
@@ -40,6 +40,8 @@ export const findWeeksByCourseAndPeriod = async (codigoAsignatura: number, numer
     const result = await pool.request()
       .input('codigoAsignatura', sql.SmallInt, codigoAsignatura)
       .input('numeroPeriodo', sql.SmallInt, numeroPeriodo)
+      .input('usuarioId', sql.Int, Math.abs(usuarioId))
+      .input('perfil', sql.NVarChar(96), perfil)
       .query(`
         SELECT 
             -- Datos Semana
@@ -96,6 +98,11 @@ export const findWeeksByCourseAndPeriod = async (codigoAsignatura: number, numer
         LEFT JOIN dbo.Asignaturas asig ON s.CodigoAsignatura = asig.Código
         LEFT JOIN Virtual.Apartados a ON s.SemanaID = a.SemanaID
         LEFT JOIN Virtual.Recursos r ON a.ApartadoID = r.ApartadoID
+            AND (
+                @perfil != 'Estudiante' 
+                OR NOT EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID)
+                OR EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID AND re.MatriculaNo = @usuarioId)
+            )
         
         -- JOINS A TABLAS HIJAS
         LEFT JOIN Virtual.Tareas t ON r.RecursoID = t.RecursoID

@@ -2,20 +2,16 @@
 import { Request, Response } from 'express';
 import * as anuncioService from '../services/anuncio.service';
 import { notificarDocentePorInteraccion } from '../services/notificacion.service';
+import { asyncHandler } from '../utils/asyncHandler';
 
-export const getRespuestas = async (req: Request, res: Response) => {
-    try {
+export const getRespuestas = asyncHandler(async (req: Request, res: Response) => {
         const recursoId = Number(req.params.recursoId);
         const respuestas = await anuncioService.getRespuestasAnuncio(recursoId);
-        res.status(200).json(respuestas);
-    } catch (error) {
-        console.error('Error obteniendo respuestas de anuncio:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
 
-export const crearRespuesta = async (req: Request, res: Response) => {
-    try {
+        res.status(200).json(respuestas);
+});
+
+export const crearRespuesta = asyncHandler(async (req: Request, res: Response) => {
         if (!req.user) return res.status(401).json({ message: 'No autorizado.' });
 
         const recursoId = Number(req.params.recursoId);
@@ -39,14 +35,10 @@ export const crearRespuesta = async (req: Request, res: Response) => {
         }
 
         res.status(201).json({ message: 'Comentario publicado.' });
-    } catch (error) {
-        console.error('Error publicando respuesta en anuncio:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+});
 
-export const eliminarRespuesta = async (req: Request, res: Response) => {
-    try {
+export const eliminarRespuesta = asyncHandler(async (req: Request, res: Response) => {
+
         if (!req.user) return res.status(401).json({ message: 'No autorizado.' });
         
         const respuestaId = Number(req.params.respuestaId);
@@ -62,8 +54,5 @@ export const eliminarRespuesta = async (req: Request, res: Response) => {
         } else {
             res.status(403).json({ message: 'No tienes permiso para eliminar este comentario.' });
         }
-    } catch (error) {
-        console.error('Error eliminando respuesta:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+
+});

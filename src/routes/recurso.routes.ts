@@ -1,78 +1,61 @@
 // src/routes/recurso.routes.ts
 import { Router } from 'express';
-
 import * as recursoController from '../controllers/recurso.controller';
-import * as recursoCtrl from '../controllers/recurso.controller';
 import { protect, authorize } from '../middleware/auth.middleware';
+import { verificarPeriodoPorApartado, verificarPeriodoPorRecurso } from '../middleware/periodo.middleware';
+import { validateSchema } from '../middleware/validate.middleware';
+import { uploadDiskGeneral, uploadDiskImagen } from '../config/multer.config';
+import { 
+    recursoUrlSchema, 
+    recursoVideoSchema, 
+    recursoAnuncioSchema, 
+    recursoVideoconferenciaSchema 
+} from '../schemas/recurso.schema';
 
 const router = Router();
 
-
-// Todas las rutas de recursos requieren autenticación
+// Todas las rutas requieren autenticación
 router.use(protect);
 
-// --- Rutas de Creación (MODIFICADAS CON MULTER) ---
-router.post('/url', recursoController.addRecursoUrl);
-router.post('/anuncio', recursoController.addRecursoAnuncio);
+// --- Rutas JSON (Validadas con Zod) ---
+router.post('/url', verificarPeriodoPorApartado(), validateSchema(recursoUrlSchema), recursoController.addRecursoUrl);
+router.post('/anuncio', verificarPeriodoPorApartado(), validateSchema(recursoAnuncioSchema), recursoController.addRecursoAnuncio);
+router.post('/video', verificarPeriodoPorApartado(), validateSchema(recursoVideoSchema), recursoController.createVideo);
+router.post('/videoconferencia', authorize(['Docente', 'Director de grupo', 'Coordinador', 'Administrador']), verificarPeriodoPorApartado(), validateSchema(recursoVideoconferenciaSchema), recursoController.createVideoconferencia);
+router.post('/prueba', verificarPeriodoPorApartado(), recursoController.addRecursoPrueba);
+router.post('/carpeta', verificarPeriodoPorApartado(), recursoController.createCarpeta);
 
-// 'archivo' debe coincidir con el nombre del campo en el FormData del frontend
-router.post('/archivo', recursoController.addRecursoArchivo);
+// --- Rutas Multipart/Form-Data (Manejadas con Multer + Disco) ---
+router.post('/archivo', uploadDiskGeneral.single('archivo'), verificarPeriodoPorApartado(), recursoController.addRecursoArchivo);
+router.post('/tarea', uploadDiskGeneral.array('archivos', 5), verificarPeriodoPorApartado(), recursoController.addRecursoTarea);
+router.post('/foro', uploadDiskGeneral.single('archivo'), verificarPeriodoPorApartado(), recursoController.addRecursoForo);
+router.post('/imagen', uploadDiskImagen.single('archivo'), verificarPeriodoPorApartado(), recursoController.createImagenFromFile);
+router.post('/imagen-url', verificarPeriodoPorApartado(), recursoController.createImagenFromUrl);
 
-// 'archivos' para tareas que pueden tener múltiples adjuntos
-router.post('/tarea', recursoController.addRecursoTarea);
-
-// 'archivo' para el adjunto principal de un foro (opcional)
-router.post('/foro',  recursoController.addRecursoForo);
-
-router.post('/videoconferencia', authorize(['Docente', 'Director de grupo']), recursoController.createVideoconferencia);
-
-router.post('/video', recursoController.createVideo);
-
-
-// --- Rutas de Gestión de un Recurso Específico (SIN CAMBIOS) ---
+// --- Rutas de Gestión de Recursos ---
 router.get('/:id', recursoController.getRecursoById);
-router.put('/:id', recursoController.updateRecurso);
-router.patch('/:id/toggle-visibility', recursoController.toggleRecursoVisibility);
-router.delete('/:id', recursoController.deleteRecurso);
+router.put('/:id', verificarPeriodoPorRecurso(), recursoController.updateRecurso);
+router.patch('/:id/toggle-visibility', verificarPeriodoPorRecurso(), recursoController.toggleRecursoVisibility);
+router.delete('/:id', verificarPeriodoPorRecurso(), recursoController.deleteRecurso);
 router.post('/:id/clone', recursoController.cloneRecurso);
+router.post('/:id/vista', authorize(['Estudiante']), recursoController.registrarVistaRecurso);
 
-
-// --- Rutas para SERVIR archivos desde la BD (NUEVAS) ---
-// Estas rutas obtendrán los datos binarios desde la BD y los enviarán al cliente.
-router.get('/tarea/archivo/:archivoId', recursoController.getAdjuntoTarea);
-router.get('/foro/:recursoId/adjunto-principal', recursoController.getAdjuntoForo);
-router.post('/prueba', recursoController.addRecursoPrueba);
-router.get('/:recursoId/archivo-data', recursoController.getRecursoArchivoData);
-
-
-// Crear imagen desde archivo (multipart: campo "archivo", y "jsonData" con el resto)
-router.post('/imagen', recursoCtrl.createImagenFromFile);
-
-// Crear imagen desde URL remota (descarga y guarda en BD)
-router.post('/imagen-url', recursoCtrl.createImagenFromUrl);
-
-// Servir binario desde BD
-router.get('/imagen/:recursoId/stream', recursoCtrl.streamImagen);
-
-
-router.post('/carpeta',  recursoController.createCarpeta);
-router.get('/carpeta/:recursoId/archivos',  recursoController.getArchivosCarpeta);
-router.post('/carpeta/:recursoId/archivos',  recursoController.uploadArchivosCarpeta);
-router.get('/carpeta/archivo/:archivoId/download',  recursoController.downloadArchivoCarpeta);
-router.delete('/carpeta/archivo/:archivoId',  recursoController.deleteArchivoCarpeta);
-router.get('/carpeta/:recursoId/contenido',  recursoController.getContenidoCarpeta);
-router.post('/carpeta/:recursoId/subcarpeta',  recursoController.createSubFolder);
-router.post('/carpeta/:recursoId/archivos',  recursoController.uploadArchivosCarpeta);
-router.delete('/carpeta/subcarpeta/:folderId',  recursoController.deleteSubFolder);
-
-// Rutas de Carpetas
-router.post('/carpeta/:recursoId/enlace',  recursoController.createLinkInFolder);
-router.delete('/carpeta/enlace/:enlaceId',  recursoController.deleteLinkInFolder);
-
+// --- Rutas de Carpetas ---
+router.get('/carpeta/:recursoId/archivos', recursoController.getArchivosCarpeta);
+router.post('/carpeta/:recursoId/archivos', uploadDiskGeneral.array('archivo', 10), recursoController.uploadArchivosCarpeta);
+router.get('/carpeta/archivo/:archivoId/download', recursoController.downloadArchivoCarpeta);
+router.delete('/carpeta/archivo/:archivoId', recursoController.deleteArchivoCarpeta);
+router.get('/carpeta/:recursoId/contenido', recursoController.getContenidoCarpeta);
+router.post('/carpeta/:recursoId/subcarpeta', recursoController.createSubFolder);
+router.delete('/carpeta/subcarpeta/:folderId', recursoController.deleteSubFolder);
+router.post('/carpeta/:recursoId/enlace', recursoController.createLinkInFolder);
+router.delete('/carpeta/enlace/:enlaceId', recursoController.deleteLinkInFolder);
 router.put('/carpeta/:recursoId/mover', recursoController.moveItemInFolder);
 
-// --- Otras rutas (SIN CAMBIOS) ---
-router.post('/:id/vista', authorize(['Estudiante']), recursoController.registrarVistaRecurso);
-router.post('/prueba', recursoController.addRecursoPrueba);
+// --- Servir Archivos desde BD ---
+router.get('/tarea/archivo/:archivoId', recursoController.getAdjuntoTarea);
+router.get('/foro/:recursoId/adjunto-principal', recursoController.getAdjuntoForo);
+router.get('/:recursoId/archivo-data', recursoController.getRecursoArchivoData);
+router.get('/imagen/:recursoId/stream', recursoController.streamImagen);
 
 export default router;

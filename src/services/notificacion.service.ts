@@ -2,7 +2,7 @@
 import sql from 'mssql';
 import { dbConfig } from '../config/database';
 import { sendWhatsAppMessage } from './whatsapp.service';
-import { buildResourceNotificationBody } from './whatsapp-templates.service';
+import { buildResourceNotificationVariables } from './whatsapp-templates.service';
 
 // --- Interfaces para el manejo de datos ---
 interface UserIdentity {
@@ -123,16 +123,41 @@ export const marcarComoLeidas = async (userIdentity: UserIdentity, ids?: number[
 
 export const createNotificacion = async (params: NotificationParams) => {
     const pool = await sql.connect(dbConfig);
+
+    // Resolver Código real del destinatario
+    const destPositivo = Math.abs(params.destinatario.codigo);
+    const destLookup = await pool.request()
+        .input('idPos', sql.Int, destPositivo)
+        .input('perfil', sql.NVarChar(96), params.destinatario.perfil)
+        .query<{ Código: number }>(`
+            SELECT TOP 1 Código FROM dbo.Usuarios 
+            WHERE (Código = @idPos OR Código = (@idPos * -1)) AND Perfil = @perfil
+        `);
+    const destReal = destLookup.recordset.length > 0 ? destLookup.recordset[0].Código : params.destinatario.codigo;
+
+    // Resolver Código real del actor (si existe)
+    let actorReal = params.actor?.codigo;
+    if (params.actor) {
+        const actorPositivo = Math.abs(params.actor.codigo);
+        const actorLookup = await pool.request()
+            .input('idPos', sql.Int, actorPositivo)
+            .input('perfil', sql.NVarChar(96), params.actor.perfil)
+            .query<{ Código: number }>(`
+                SELECT TOP 1 Código FROM dbo.Usuarios 
+                WHERE (Código = @idPos OR Código = (@idPos * -1)) AND Perfil = @perfil
+            `);
+        actorReal = actorLookup.recordset.length > 0 ? actorLookup.recordset[0].Código : params.actor.codigo;
+    }
+
     const request = pool.request()
-        .input('usuarioId', sql.SmallInt, params.destinatario.codigo)
+        .input('usuarioId', sql.SmallInt, destReal)
         .input('perfilUsuario', sql.NVarChar(96), params.destinatario.perfil)
         .input('tipo', sql.VarChar(50), params.tipo)
         .input('mensaje', sql.NVarChar(512), params.mensaje);
 
-    // Añade los parámetros opcionales solo si existen
     if (params.recursoId) request.input('recursoId', sql.Int, params.recursoId);
     if (params.actor) {
-        request.input('actorId', sql.SmallInt, params.actor.codigo);
+        request.input('actorId', sql.SmallInt, actorReal!);
         request.input('actorPerfil', sql.NVarChar(96), params.actor.perfil);
     }
 
@@ -248,7 +273,7 @@ export const notificarEstudiantesDeCurso = async (
             e.TeléfonoPadre,
             e.NombreCompletoAcudiente,
             asig.Descripción as NombreAsignatura,
-            u.Código AS ID_Usuario_Real
+            MIN(u.Código) AS ID_Usuario_Real
         FROM Virtual.Apartados ap
         JOIN Virtual.Semanas sem ON ap.SemanaID = sem.SemanaID
         JOIN dbo.Asignaturas asig ON sem.CodigoAsignatura = asig.Código
@@ -256,6 +281,16 @@ export const notificarEstudiantesDeCurso = async (
         LEFT JOIN dbo.Usuarios u ON (e.MatrículaNo = u.Código OR e.MatrículaNo = (u.Código * -1))
         WHERE ap.ApartadoID = @apartadoId
           AND (e.Estado IS NULL OR e.Estado != 'Retirado')
+          GROUP BY 
+            e.MatrículaNo, 
+            e.PrimerNombre, 
+            e.PrimerApellido,
+            e.Teléfono,
+            e.TeléfonoAcudiente,
+            e.TeléfonoMadre,
+            e.TeléfonoPadre,
+            e.NombreCompletoAcudiente,
+            asig.Descripción
     `;
 
     const result = await pool.request()
@@ -338,7 +373,7 @@ export const notificarEstudiantesDeCurso = async (
         
         // --- FUNCIÓN HELPER INTERNA PARA ENVIAR ---
         const enviar = (telefono: string, nombreDestino: string) => {
-            const body = buildResourceNotificationBody({
+            const variablesJSON = buildResourceNotificationVariables({
                 nombreDestino: nombreDestino,
                 tipoRecurso: tipoLegible,
                 nombreAsignatura: NombreAsignatura,
@@ -347,7 +382,7 @@ export const notificarEstudiantesDeCurso = async (
                 nombreEstudiante: nombreEst,
                 fecha: fechaPub
             })
-            whatsappPromises.push(sendWhatsAppMessage(telefono, body));
+            whatsappPromises.push(sendWhatsAppMessage(telefono, variablesJSON));
         };
 
         // --- CASO 1: ENVIAR AL ESTUDIANTE ---
@@ -415,4 +450,129 @@ export const deleteNotificaciones = async (userIdentity: UserIdentity, ids?: num
     }
 
     await request.query(query);
+};
+
+export const notificarEstudiantesEspecificos = async (
+    estudiantesIds: number[],
+    recursoId: number, 
+    tipo: string, 
+    tituloRecurso: string, 
+    actor: { codigo: number, perfil: string },
+    target: WhatsAppTarget
+) => {
+    if (!estudiantesIds || estudiantesIds.length === 0) return;
+
+    const pool = await sql.connect(dbConfig);
+    console.log(`[WhatsApp] Iniciando proceso PERSONALIZADO para recurso "${tituloRecurso}". Target: "${target}". Estudiantes VIP: ${estudiantesIds.length}`);
+    
+    const queryActor = `SELECT NombreCompleto FROM dbo.Usuarios WHERE Código = @codigo AND Perfil = @perfil`;
+    const resultActor = await pool.request()
+        .input('codigo', sql.SmallInt, actor.codigo)
+        .input('perfil', sql.NVarChar(96), actor.perfil)
+        .query(queryActor);
+    const nombreDocente = resultActor.recordset[0]?.NombreCompleto || 'Docente';
+
+    const idsList = estudiantesIds.join(',');
+
+    // Solo buscamos a los estudiantes seleccionados cruzando con su asignatura
+    const querySelect = `
+        SELECT 
+            e.MatrículaNo, e.PrimerNombre, e.PrimerApellido,
+            e.Teléfono as TelefonoEstudiante, e.TeléfonoAcudiente, e.TeléfonoMadre, e.TeléfonoPadre, e.NombreCompletoAcudiente,
+            asig.Descripción as NombreAsignatura,
+            MIN(u.Código) AS ID_Usuario_Real
+        FROM dbo.Estudiantes e
+        LEFT JOIN dbo.Usuarios u ON (e.MatrículaNo = u.Código OR e.MatrículaNo = (u.Código * -1))
+        CROSS JOIN (
+            SELECT TOP 1 asig2.Descripción
+            FROM Virtual.Recursos r
+            JOIN Virtual.Apartados ap ON r.ApartadoID = ap.ApartadoID
+            JOIN Virtual.Semanas sem ON ap.SemanaID = sem.SemanaID
+            JOIN dbo.Asignaturas asig2 ON sem.CodigoAsignatura = asig2.Código
+            WHERE r.RecursoID = @recursoId
+        ) as asig
+        WHERE e.MatrículaNo IN (${idsList})
+          AND (e.Estado IS NULL OR e.Estado != 'Retirado')
+        GROUP BY 
+            e.MatrículaNo, e.PrimerNombre, e.PrimerApellido, e.Teléfono, e.TeléfonoAcudiente, e.TeléfonoMadre, e.TeléfonoPadre, e.NombreCompletoAcudiente, asig.Descripción
+    `;
+
+    const result = await pool.request()
+        .input('recursoId', sql.Int, recursoId)
+        .query(querySelect);
+
+    const estudiantes = result.recordset;
+
+    if (estudiantes.length === 0) {
+        console.warn('[WhatsApp] Estudiantes específicos no encontrados o inactivos.');
+        return;
+    }
+
+    // Insertar notificaciones en BD (Campanita del Dashboard)
+    const table = new sql.Table('Virtual.Notificaciones');
+    table.create = false; 
+    table.columns.add('UsuarioID', sql.SmallInt, { nullable: false });
+    table.columns.add('PerfilUsuario', sql.NVarChar(96), { nullable: false });
+    table.columns.add('Tipo', sql.VarChar(50), { nullable: false });
+    table.columns.add('Mensaje', sql.NVarChar(1024), { nullable: false });
+    table.columns.add('RecursoID', sql.Int, { nullable: true });
+    table.columns.add('FechaCreacion', sql.DateTime, { nullable: false });
+    table.columns.add('Leido', sql.Bit, { nullable: false });
+    table.columns.add('ActorID', sql.SmallInt, { nullable: true });
+    table.columns.add('ActorPerfil', sql.NVarChar(96), { nullable: true });
+
+    const mensaje = `Nuevo(a) ${tipo.toLowerCase()} exclusivo publicado: "${tituloRecurso}"`;
+    const now = new Date();
+    let insertCount = 0;
+
+    estudiantes.forEach((est: any) => {
+        if (est.ID_Usuario_Real) {
+            table.rows.add(est.ID_Usuario_Real, 'Estudiante', tipo, mensaje, recursoId, now, 0, actor.codigo, actor.perfil);
+            insertCount++;
+        }
+    });
+
+    if (insertCount > 0) {
+        await new sql.Request(pool).bulk(table);
+        console.log(`✅ [Notificación] ${insertCount} notificaciones personalizadas insertadas en BD.`);
+    }
+
+    // Disparo a WhatsApp
+    if (target === 'NONE') return; 
+
+    const whatsappPromises: Promise<any>[] = [];
+    const fechaPub = now.toLocaleDateString('es-CO');
+
+    estudiantes.forEach((est: any) => {
+        const nombreEst = `${est.PrimerNombre} ${est.PrimerApellido}`;
+        
+        const enviar = (telefono: string, nombreDestino: string) => {
+            const variablesJSON = buildResourceNotificationVariables({
+                nombreDestino: nombreDestino,
+                tipoRecurso: tipo.toLowerCase(),
+                nombreAsignatura: est.NombreAsignatura,
+                nombreDocente: nombreDocente,
+                tituloRecurso: tituloRecurso,
+                nombreEstudiante: nombreEst,
+                fecha: fechaPub
+            });
+            whatsappPromises.push(sendWhatsAppMessage(telefono, variablesJSON));
+        };
+
+        if (target === 'STUDENT_ONLY' || target === 'BOTH') {
+            if (est.TelefonoEstudiante) enviar(est.TelefonoEstudiante, est.PrimerNombre);
+        }
+
+        if (target === 'GUARDIAN_ONLY' || target === 'BOTH') {
+            const telefonoPadre = est.TeléfonoAcudiente || est.TeléfonoMadre || est.TeléfonoPadre;
+            const nombrePadre = est.TeléfonoAcudiente ? (est.NombreCompletoAcudiente || 'Acudiente') : (est.TeléfonoMadre ? 'Madre de familia' : 'Padre de familia');
+            
+            if (telefonoPadre) enviar(telefonoPadre, nombrePadre);
+        }
+    });
+
+    Promise.allSettled(whatsappPromises).then((results) => {
+        const sent = results.filter(r => r.status === 'fulfilled').length;
+        console.log(`[WhatsApp VIP] Enviados: ${sent}/${results.length}`);
+    });
 };

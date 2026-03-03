@@ -9,6 +9,8 @@ const upload = multer({ storage: multer.memoryStorage() }); // Configura multer 
 
 router.use(protect);
 
+router.get('/:codigo/foto', usuarioController.getFotoByUsuario);
+
 // Ruta para obtener los datos del perfil
 router.get('/mi-perfil', usuarioController.getMiPerfil);
 router.get('/mi-perfil/foto', usuarioController.getMiFoto);

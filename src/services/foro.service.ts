@@ -134,19 +134,36 @@ export const crearNuevaEntrada = async (data: NuevaEntradaPayload, actor?: UserA
     const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
     try {
-        await transaction.begin();
+       await transaction.begin();
+
+        // Resolver el Código real en dbo.Usuarios (puede ser negativo para estudiantes)
+        const idPositivo = Math.abs(data.usuarioId);
+        const userLookup = await new sql.Request(transaction)
+            .input('idPos', sql.Int, idPositivo)
+            .input('perfil', sql.NVarChar(96), data.perfilUsuario)
+            .query<{ Código: number }>(`
+                SELECT TOP 1 Código 
+                FROM dbo.Usuarios 
+                WHERE (Código = @idPos OR Código = (@idPos * -1)) 
+                  AND Perfil = @perfil
+            `);
+
+        const usuarioIdReal = userLookup.recordset.length > 0 
+            ? userLookup.recordset[0].Código 
+            : data.usuarioId;
+
         const request = new sql.Request(transaction);
 
         const result = await request
             .input('recursoId', sql.Int, data.recursoId)
-            .input('usuarioId', sql.SmallInt, data.usuarioId)
+            .input('usuarioId', sql.SmallInt, usuarioIdReal)
             .input('perfilUsuario', sql.NVarChar(96), data.perfilUsuario)
             .input('contenidoHTML', sql.NVarChar(sql.MAX), data.contenidoHTML)
             .input('entradaPadreId', sql.Int, data.entradaPadreId)
             .query(`
                 INSERT INTO Virtual.ForoEntradas (RecursoID, UsuarioID, PerfilUsuario, ContenidoHTML, EntradaPadreID, FechaCreacion)
                 OUTPUT INSERTED.EntradaID
-                VALUES (@recursoId, @usuarioId, @perfilUsuario, @contenidoHTML, @entradaPadreId, GETUTCDATE());
+                VALUES (@recursoId, @usuarioId, @perfilUsuario, @contenidoHTML, @entradaPadreId, GETDATE());
             `);
         
         const newEntradaId = result.recordset[0].EntradaID;
@@ -189,16 +206,26 @@ export const actualizarEntrada = async (
 
     try {
         await transaction.begin();
+
+        const idPositivo = Math.abs(usuarioId);
+        const userLookup = await new sql.Request(transaction)
+            .input('idPos', sql.Int, idPositivo)
+            .input('perfil', sql.NVarChar(96), perfilUsuario)
+            .query<{ Código: number }>(`
+                SELECT TOP 1 Código FROM dbo.Usuarios 
+                WHERE (Código = @idPos OR Código = (@idPos * -1)) AND Perfil = @perfil
+            `);
+        const usuarioIdReal = userLookup.recordset.length > 0 ? userLookup.recordset[0].Código : usuarioId;
         
         // Primero, actualizamos el texto de la entrada principal
         const result = await new sql.Request(transaction)
             .input('entradaId', sql.Int, entradaId)
             .input('contenidoHTML', sql.NVarChar(sql.MAX), contenidoHTML)
-            .input('usuarioId', sql.SmallInt, usuarioId)
+            .input('usuarioId', sql.SmallInt, usuarioIdReal)
             .input('perfilUsuario', sql.NVarChar(96), perfilUsuario)
             .query(`
                 UPDATE Virtual.ForoEntradas
-                SET ContenidoHTML = @contenidoHTML, Editado = 1, FechaEdicion = GETUTCDATE()
+                SET ContenidoHTML = @contenidoHTML, Editado = 1, FechaEdicion = GETDATE()
                 WHERE EntradaID = @entradaId 
                   AND UsuarioID = @usuarioId AND PerfilUsuario = @perfilUsuario;
             `);
@@ -255,6 +282,16 @@ export const eliminarEntrada = async (entradaId: number, usuarioId: number, perf
     try {
         await transaction.begin();
 
+        const idPositivo = Math.abs(usuarioId);
+        const userLookup = await new sql.Request(transaction)
+            .input('idPos', sql.Int, idPositivo)
+            .input('perfil', sql.NVarChar(96), perfilUsuario)
+            .query<{ Código: number }>(`
+                SELECT TOP 1 Código FROM dbo.Usuarios 
+                WHERE (Código = @idPos OR Código = (@idPos * -1)) AND Perfil = @perfil
+            `);
+        const usuarioIdReal = userLookup.recordset.length > 0 ? userLookup.recordset[0].Código : usuarioId;
+
         const mensajeEliminado = perfilUsuario.includes('Docente') 
             ? '[Mensaje eliminado por un moderador]' 
             : '[Mensaje eliminado por el autor]';
@@ -263,7 +300,7 @@ export const eliminarEntrada = async (entradaId: number, usuarioId: number, perf
         request
             .input('entradaId', sql.Int, entradaId)
             .input('contenidoHTML', sql.NVarChar(sql.MAX), `<p><i>${mensajeEliminado}</i></p>`)
-            .input('usuarioId', sql.SmallInt, usuarioId)
+            .input('usuarioId', sql.SmallInt, usuarioIdReal)
             .input('perfilUsuario', sql.NVarChar(96), perfilUsuario);
         
         let updateQuery: string;

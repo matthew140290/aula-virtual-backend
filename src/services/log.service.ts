@@ -31,12 +31,20 @@ export const registrarAccion = async (
         const maxCodigo = maxIdResult.recordset[0].maxCodigo || 0;
         const newCodigo = maxCodigo + 1;
 
-        // console.log(`--- LOGGING: El último código es ${maxCodigo}. El nuevo código será ${newCodigo}. ---`);
+        const idPositivo = Math.abs(codigoUsuario);
+        const userLookup = await new sql.Request(transaction)
+            .input('idPos', sql.Int, idPositivo)
+            .input('perfil', sql.NVarChar(96), perfil)
+            .query<{ Código: number }>(`
+                SELECT TOP 1 Código FROM dbo.Usuarios 
+                WHERE (Código = @idPos OR Código = (@idPos * -1)) AND Perfil = @perfil
+            `);
+        const codigoReal = userLookup.recordset.length > 0 ? userLookup.recordset[0].Código : codigoUsuario;
 
-        // 4. Realizar la inserción, AHORA INCLUYENDO el 'Código' que calculamos.
+
         await request
             .input('codigo', sql.Int, newCodigo)
-            .input('codigoUsuario', sql.SmallInt, codigoUsuario)
+            .input('codigoUsuario', sql.SmallInt, codigoReal)
             .input('perfilUsuario', sql.NVarChar(96), perfil)
             .input('menu', sql.NVarChar(96), menu)
             .input('opcion', sql.NVarChar(512), opcion)
@@ -45,7 +53,7 @@ export const registrarAccion = async (
                 INSERT INTO dbo.RegistroOperacionesUsuarios 
                     ([Código], [CódigoUsuario], [PerfilUsuario], [Fecha], [Hora], [Menú], [Opción], [Operación])
                 VALUES 
-                    (@codigo, @codigoUsuario, @perfilUsuario, FORMAT(GETUTCDATE(), 'M/d/yyyy'), FORMAT(GETDATE(), 'h:mm tt'), @menu, @opcion, @operacion);
+                    (@codigo, @codigoUsuario, @perfilUsuario, FORMAT(GETDATE(), 'M/d/yyyy'), FORMAT(GETDATE(), 'h:mm tt'), @menu, @opcion, @operacion);
             `);
 
             

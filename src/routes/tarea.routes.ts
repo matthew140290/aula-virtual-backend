@@ -1,6 +1,7 @@
 //src/routes/tarea.routes
 import { Router } from 'express';
 import { protect, authorize } from '../middleware/auth.middleware';
+import { verificarPeriodoPorRecurso } from '../middleware/periodo.middleware';
 import * as tareaController from '../controllers/tarea.controller';
 
 const router = Router();
@@ -9,9 +10,10 @@ const router = Router();
 router.use(protect);
 
 router.post(
-    '/:id/entregas', 
-    authorize(['Estudiante', 'Docente', 'Director de grupo']), 
-    tareaController.crearEntrega 
+    '/:id/entregas',
+    authorize(['Estudiante', 'Docente', 'Director de grupo']),
+    verificarPeriodoPorRecurso(),
+    tareaController.crearEntrega
 );
 
 

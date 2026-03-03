@@ -2,21 +2,17 @@
 import { Request, Response } from 'express';
 import * as foroService from '../services/foro.service';
 import { notificarDocentePorInteraccion } from '../services/notificacion.service';
+import { asyncHandler } from '../utils/asyncHandler';
 
 
-export const getEntradas = async (req: Request, res: Response) => {
-    try {
+export const getEntradas = asyncHandler(async (req: Request, res: Response) => {
         const recursoId = Number(req.params.recursoId);
         const entradas = await foroService.getEntradasDelForo(recursoId);
         res.status(200).json(entradas);
-    } catch (error) {
-        console.error('Error al obtener entradas del foro:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
 
-export const crearEntrada = async (req: Request, res: Response) => {
-    try {
+});
+
+export const crearEntrada = asyncHandler(async (req: Request, res: Response) => {
         if (!req.user) {
             return res.status(401).json({ message: 'No autorizado' });
         }
@@ -47,14 +43,10 @@ export const crearEntrada = async (req: Request, res: Response) => {
         }
         
         res.status(201).json({ message: 'Respuesta publicada con éxito.' });
-    } catch (error) {
-        console.error('Error al crear entrada del foro:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
 
-export const actualizarUnaEntrada = async (req: Request, res: Response) => {
-    try {
+});
+
+export const actualizarUnaEntrada = asyncHandler(async (req: Request, res: Response) => {
         if (!req.user) return res.status(401).json({ message: 'No autorizado.' });
         
         const entradaId = Number(req.params.entradaId);
@@ -77,14 +69,10 @@ export const actualizarUnaEntrada = async (req: Request, res: Response) => {
         } else {
             res.status(403).json({ message: 'No tienes permiso para editar este mensaje.' });
         }
-    } catch (error) {
-        console.error('Error al actualizar entrada:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+});
 
-export const eliminarUnaEntrada = async (req: Request, res: Response) => {
-    try {
+export const eliminarUnaEntrada = asyncHandler(async (req: Request, res: Response) => {
+
         if (!req.user) return res.status(401).json({ message: 'No autorizado.' });
 
         const entradaId = Number(req.params.entradaId);
@@ -95,24 +83,15 @@ export const eliminarUnaEntrada = async (req: Request, res: Response) => {
         } else {
             res.status(403).json({ message: 'No tienes permiso para eliminar este mensaje.' });
         }
-    } catch (error) {
-        console.error('Error al eliminar entrada:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+});
 
-export const obtenerCalificaciones = async (req: Request, res: Response) => {
-    try {
+export const obtenerCalificaciones = asyncHandler(async (req: Request, res: Response) => {
         const recursoId = Number(req.params.recursoId);
         const calificaciones = await foroService.getCalificacionesForo(recursoId);
         res.status(200).json(calificaciones);
-    } catch (error) {
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+});
 
-export const calificarParticipacion = async (req: Request, res: Response) => {
-    try {
+export const calificarParticipacion = asyncHandler(async (req: Request, res: Response) => {
         if (!req.user || !req.user.perfil.includes('Docente')) {
             return res.status(403).json({ message: 'No tienes permiso para calificar.' });
         }
@@ -120,13 +99,10 @@ export const calificarParticipacion = async (req: Request, res: Response) => {
         const { matriculaNo, calificacion, comentario } = req.body;
         await foroService.guardarCalificacion(recursoId, matriculaNo, calificacion, comentario);
         res.status(200).json({ message: 'Calificación guardada con éxito.' });
-    } catch (error) {
-        res.status(500).json({ message: 'Error interno del servidor.' });
-    }
-};
+});
 
-export const getAdjuntoEntrada = async (req: Request, res: Response) => {
-    try {
+export const getAdjuntoEntrada = asyncHandler(async (req: Request, res: Response) => {
+
         const entradaId = Number(req.params.entradaId);
         const archivo = await foroService.findAdjuntoDeEntrada(entradaId);
 
@@ -136,7 +112,4 @@ export const getAdjuntoEntrada = async (req: Request, res: Response) => {
 
         res.setHeader('Content-Type', archivo.ImagenMimeType);
         res.send(archivo.ImagenData);
-    } catch (error) {
-        res.status(500).json({ message: 'Error al obtener el adjunto.' });
-    }
-};
+});

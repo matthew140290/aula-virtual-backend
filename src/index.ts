@@ -18,18 +18,22 @@ import archivoRoutes from './routes/archivo.routes';
 import foroRoutes from './routes/foro.routes';
 import pruebaRoutes from './routes/prueba.routes';
 import anuncioRoutes from './routes/anuncio.routes';
+import anuncioInstitucionalRoutes from './routes/anuncioInstitucional.routes';
+import auditoriaRoutes from './routes/auditoria.routes';
+import dashboardRoutes from './routes/dashboard.routes';
+import { errorHandler } from './middleware/error.middleware';
 
 dotenv.config();
 
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
 
 
 // Define las URLs que tendrán permiso para acceder a tu API
-// const whitelist = ['http://localhost:3001', 'http://localhost:5173'];
+const whitelist = ['http://localhost:3002', 'http://localhost:5173', 'http://localhost:5174'];
 // const whitelist = ['https://aula-vitual.plataformaangela.com'];
-const whitelist = ['https://glenn.aula-virtual.plataformaangela.com'];
+// const whitelist = ['https://glenn.aula-virtual.plataformaangela.com'];
 
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
@@ -68,12 +72,18 @@ app.use('/api/apartados', apartadoRoutes);
 app.use('/api/estudiantes', estudianteRoutes);
 app.use('/api/recursos', recursoRoutes);
 app.use('/api/anuncios', anuncioRoutes);
+app.use('/api', anuncioInstitucionalRoutes);
 app.use('/api/tareas', tareaRoutes);
 app.use('/api/archivos', archivoRoutes);
 app.use('/api/usuarios', usuarioRoutes);
 app.use('/api/notificaciones', notificacionRoutes);
 app.use('/api/foros', foroRoutes);
-app.use('/api/pruebas', pruebaRoutes); 
+app.use('/api/pruebas', pruebaRoutes);
+app.use('/api/auditoria', auditoriaRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+//app.use('/api/anuncio-institucionales', anuncioInstitucionalRoutes); // Asegúrate de que esta ruta esté registrada
+
+app.use(errorHandler); // Middleware de manejo de errores global, debe ir después de las rutas
 
 // Iniciar el servidor
 app.listen(PORT, () => {

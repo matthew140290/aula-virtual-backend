@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import * as semanaController from '../controllers/semana.controller';
 import { protect, authorize } from '../middleware/auth.middleware'; // Importamos el guardián
+import { ROLES } from '../constants/roles';
 
 const router = Router();
 
@@ -9,17 +10,42 @@ const router = Router();
 router.use(protect);
 
 // GET /api/semanas?codigoAsignatura=X&numeroPeriodo=Y
-router.get('/', authorize(['Docente', 'Estudiante', 'Director de grupo']), semanaController.getWeeks);
+router.get(
+    '/', 
+    authorize([
+        ROLES.DOCENTE, 
+        ROLES.ESTUDIANTE, 
+        ROLES.DIRECTOR_GRUPO,
+        ROLES.COORDINADOR,
+        ROLES.COORDINADOR_GENERAL,
+        ROLES.ADMINISTRADOR,
+        ROLES.MASTER
+    ]), 
+    semanaController.getWeeks
+);
 
-// POST /api/semanas
-router.post('/', authorize(['Docente', 'Director de grupo']),semanaController.addWeeks);
+router.post(
+    '/', 
+    authorize([ROLES.DOCENTE, ROLES.DIRECTOR_GRUPO]),
+    semanaController.addWeeks
+);
 
-// PATCH /api/semanas/:id
-router.patch('/:id', semanaController.updateWeek);
+router.patch(
+    '/:id', 
+    authorize([ROLES.DOCENTE, ROLES.DIRECTOR_GRUPO]), 
+    semanaController.updateWeek
+);
 
-// DELETE /api/semanas/:id
-router.delete('/:id', semanaController.deleteWeek);
+router.delete(
+    '/:id', 
+    authorize([ROLES.DOCENTE, ROLES.DIRECTOR_GRUPO]), 
+    semanaController.deleteWeek
+);
 
-router.post('/:id/clone', semanaController.cloneWeek);
+router.post(
+    '/:id/clone', 
+    authorize([ROLES.DOCENTE, ROLES.DIRECTOR_GRUPO]), 
+    semanaController.cloneWeek
+);
 
 export default router;
