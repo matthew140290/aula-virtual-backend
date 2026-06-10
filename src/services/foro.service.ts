@@ -13,7 +13,15 @@ export interface ForoEntrada {
     NombreCompletoAutor: string;
     PerfilAutor: string;
     EntradaPadreID: number | null;
+    adjunto: { NombreArchivo: string } | null;
     respuestas: ForoEntrada[]; // Para anidar las respuestas
+}
+
+interface ForoEntradaRow extends Omit<ForoEntrada, 'adjunto' | 'respuestas'> {}
+
+interface ForoAdjuntoRow {
+    EntradaID: number;
+    NombreArchivo: string;
 }
 
 // Interfaz para los datos de una nueva entrada
@@ -76,12 +84,12 @@ export const getEntradasDelForo = async (recursoId: number): Promise<ForoEntrada
     `;
 
     const [resultHilo, resultAdjuntos] = await Promise.all([
-        pool.request().input('recursoId', sql.Int, recursoId).query(queryHilo),
-        pool.request().input('recursoId', sql.Int, recursoId).query(queryAdjuntos)
+        pool.request().input('recursoId', sql.Int, recursoId).query<ForoEntradaRow>(queryHilo),
+        pool.request().input('recursoId', sql.Int, recursoId).query<ForoAdjuntoRow>(queryAdjuntos)
     ]);
 
     // Mapeamos los adjuntos para un acceso rápido
-    const adjuntosMap = new Map<number, any>();
+    const adjuntosMap = new Map<number, { NombreArchivo: string }>();
     resultAdjuntos.recordset.forEach(adj => {
         adjuntosMap.set(adj.EntradaID, {
             NombreArchivo: adj.NombreArchivo
@@ -89,7 +97,7 @@ export const getEntradasDelForo = async (recursoId: number): Promise<ForoEntrada
     });
 
     // Función para construir el árbol, ahora añadiendo el adjunto desde el mapa
-    const construirArbol = (list: any[]): ForoEntrada[] => {
+    const construirArbol = (list: ForoEntradaRow[]): ForoEntrada[] => {
         const map = new Map<number, ForoEntrada>();
         const roots: ForoEntrada[] = [];
 
@@ -356,21 +364,45 @@ export const getCalificacionesForo = async (recursoId: number) => {
     const result = await pool.request()
         .input('recursoId', sql.Int, recursoId)
         .query(`
-            WITH ConteoParticipaciones AS (
+            WITH AudienciaPersonalizada AS (
+                SELECT DISTINCT ABS(MatriculaNo) AS MatriculaNo
+                FROM Virtual.RecursosEstudiantes
+                WHERE RecursoID = @recursoId
+            ),
+            RecursoScope AS (
+                SELECT CASE WHEN EXISTS (SELECT 1 FROM AudienciaPersonalizada) THEN 1 ELSE 0 END AS EsPersonalizado
+            ),
+            ConteoParticipaciones AS (
                 SELECT 
-                    UsuarioID, 
+                    ABS(UsuarioID) AS UsuarioID,
                     COUNT(EntradaID) as Total
                 FROM Virtual.ForoEntradas
                 WHERE RecursoID = @recursoId
-                GROUP BY UsuarioID
+                  AND (
+                    (SELECT EsPersonalizado FROM RecursoScope) = 0
+                    OR EXISTS (
+                        SELECT 1
+                        FROM AudienciaPersonalizada ap
+                        WHERE ap.MatriculaNo = ABS(UsuarioID)
+                    )
+                  )
+                GROUP BY ABS(UsuarioID)
             ),
             CalificacionesExistentes AS (
                 SELECT 
-                    MatriculaNo, 
+                    ABS(MatriculaNo) AS MatriculaNo,
                     Calificacion, 
                     ComentarioProfesor
                 FROM Virtual.ForoCalificaciones
                 WHERE RecursoID = @recursoId
+                  AND (
+                    (SELECT EsPersonalizado FROM RecursoScope) = 0
+                    OR EXISTS (
+                        SELECT 1
+                        FROM AudienciaPersonalizada ap
+                        WHERE ap.MatriculaNo = ABS(MatriculaNo)
+                    )
+                  )
             )
             SELECT 
                 -- Si existe nota usamos esa matricula, si no, usamos el ID del usuario que participó
@@ -389,10 +421,25 @@ export const guardarCalificacion = async (recursoId: number, matriculaNo: number
     const pool = await poolPromise;
     await pool.request()
         .input('recursoId', sql.Int, recursoId)
-        .input('matriculaNo', sql.Int, matriculaNo)
+        .input('matriculaNo', sql.Int, Math.abs(matriculaNo))
         .input('calificacion', sql.Decimal(5, 2), calificacion)
         .input('comentario', sql.NVarChar(sql.MAX), comentario)
         .query(`
+            IF EXISTS (
+                SELECT 1
+                FROM Virtual.RecursosEstudiantes re
+                WHERE re.RecursoID = @recursoId
+            )
+            AND NOT EXISTS (
+                SELECT 1
+                FROM Virtual.RecursosEstudiantes re
+                WHERE re.RecursoID = @recursoId
+                  AND ABS(re.MatriculaNo) = @matriculaNo
+            )
+            BEGIN
+                THROW 51000, 'El estudiante no pertenece a la audiencia personalizada de este foro.', 1;
+            END;
+
             MERGE Virtual.ForoCalificaciones AS target
             USING (SELECT @recursoId AS RecursoID, @matriculaNo AS MatriculaNo) AS source
             ON (target.RecursoID = source.RecursoID AND target.MatriculaNo = source.MatriculaNo)
@@ -408,6 +455,20 @@ export const findAdjuntoDeEntrada = async (entradaId: number) => {
     const pool = await poolPromise;
     const result = await pool.request()
         .input('entradaId', sql.Int, entradaId)
-        .query('SELECT ImagenData, ImagenMimeType FROM Virtual.ForoEntradaAdjuntos WHERE EntradaID = @entradaId');
+        .query<{ ImagenData: Buffer; ImagenMimeType: string; RecursoID: number }>(`
+            SELECT a.ImagenData, a.ImagenMimeType, e.RecursoID
+            FROM Virtual.ForoEntradaAdjuntos a
+            INNER JOIN Virtual.ForoEntradas e ON e.EntradaID = a.EntradaID
+            WHERE a.EntradaID = @entradaId
+        `);
     return result.recordset[0];
+};
+
+export const findRecursoIdByEntradaId = async (entradaId: number): Promise<number | null> => {
+    const pool = await poolPromise;
+    const result = await pool.request()
+        .input('entradaId', sql.Int, entradaId)
+        .query<{ RecursoID: number }>('SELECT RecursoID FROM Virtual.ForoEntradas WHERE EntradaID = @entradaId');
+
+    return result.recordset[0]?.RecursoID ?? null;
 };

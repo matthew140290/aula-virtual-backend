@@ -177,6 +177,15 @@ export const findEventosProximosByEstudiante = async (matriculaNo: number): Prom
 
             WHERE e.[MatrículaNo] = @matriculaNo
               AND r.Visible = 1
+              AND (
+                  NOT EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID)
+                  OR EXISTS (
+                      SELECT 1
+                      FROM Virtual.RecursosEstudiantes re
+                      WHERE re.RecursoID = r.RecursoID
+                        AND ABS(re.MatriculaNo) = @matriculaNo
+                  )
+              )
               AND r.RecursoID NOT IN (
                   SELECT RecursoID 
                   FROM Virtual.EventosOcultos 
@@ -232,10 +241,11 @@ export const findContextoAcademicoByDocente = async (codigoDocente: number): Pro
 export const getVistaRecursoEstudiante = async (recursoId: number, matriculaNo: number) => {
     const pool = await poolPromise;
     const now = new Date();
+    const matriculaNormalizada = Math.abs(matriculaNo);
     
     const result = await pool.request()
         .input('recursoId', sql.Int, recursoId)
-        .input('matriculaNo', sql.Int, matriculaNo)
+        .input('matriculaNo', sql.Int, matriculaNormalizada)
         .query(`
             SELECT 
                 -- 1. Datos Base del Recurso
@@ -261,6 +271,7 @@ export const getVistaRecursoEstudiante = async (recursoId: number, matriculaNo: 
                 p.DuracionMinutos as P_Duracion,
                 p.Publicado as P_Publicado,
                 p.ModoRevision, 
+                CASE WHEN p.Contrasena IS NOT NULL AND LTRIM(RTRIM(p.Contrasena)) <> '' THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END as P_RequiereContrasena,
 
                 -- 4. Estado del Estudiante (Tarea - Virtual.EntregasTareas)
                 et.FechaEntrega,
@@ -279,9 +290,13 @@ export const getVistaRecursoEstudiante = async (recursoId: number, matriculaNo: 
                 (SELECT TOP 1 UrlArchivo FROM Virtual.ArchivosEntrega ae WHERE ae.EntregaID = et.EntregaID) as UrlArchivoEntregado,
 
                 
-                (SELECT COUNT(*) FROM Virtual.PruebasResultados rp WHERE rp.PruebaID = p.PruebaID AND rp.MatriculaNo = @matriculaNo) as IntentosUsados,
-                (SELECT TOP 1 CalificacionFinal FROM Virtual.PruebasResultados rp WHERE rp.PruebaID = p.PruebaID AND rp.MatriculaNo = @matriculaNo ORDER BY FechaEntrega DESC) as P_NotaReciente,
-                (SELECT TOP 1 FechaEntrega FROM Virtual.PruebasResultados rp WHERE rp.PruebaID = p.PruebaID AND rp.MatriculaNo = @matriculaNo ORDER BY FechaEntrega DESC) as P_FechaReciente
+                (SELECT COUNT(*)
+                 FROM Virtual.PruebasResultados rp
+                 WHERE rp.PruebaID = p.PruebaID
+                   AND ABS(rp.MatriculaNo) = @matriculaNo
+                   AND rp.Estado IN ('Pendiente', 'Calificado', 'Entregado')) as IntentosUsados,
+                (SELECT TOP 1 CalificacionFinal FROM Virtual.PruebasResultados rp WHERE rp.PruebaID = p.PruebaID AND ABS(rp.MatriculaNo) = @matriculaNo ORDER BY FechaEntrega DESC) as P_NotaReciente,
+                (SELECT TOP 1 FechaEntrega FROM Virtual.PruebasResultados rp WHERE rp.PruebaID = p.PruebaID AND ABS(rp.MatriculaNo) = @matriculaNo ORDER BY FechaEntrega DESC) as P_FechaReciente
 
             FROM Virtual.Recursos r
             -- Joins de Configuración
@@ -289,9 +304,18 @@ export const getVistaRecursoEstudiante = async (recursoId: number, matriculaNo: 
             LEFT JOIN Virtual.Pruebas p ON r.RecursoID = p.RecursoID
             
             -- Joins de Estado del Estudiante
-            LEFT JOIN Virtual.EntregasTareas et ON t.TareaID = et.TareaID AND et.MatriculaNo = @matriculaNo
+            LEFT JOIN Virtual.EntregasTareas et ON t.TareaID = et.TareaID AND ABS(et.MatriculaNo) = @matriculaNo
             
             WHERE r.RecursoID = @recursoId
+              AND (
+                  NOT EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID)
+                  OR EXISTS (
+                      SELECT 1
+                      FROM Virtual.RecursosEstudiantes re
+                      WHERE re.RecursoID = r.RecursoID
+                        AND ABS(re.MatriculaNo) = @matriculaNo
+                  )
+              )
         `);
 
     if (result.recordset.length === 0) return null;
@@ -376,6 +400,7 @@ export const getVistaRecursoEstudiante = async (recursoId: number, matriculaNo: 
             intentosMax: row.P_IntentosMax,
             duracionMinutos: row.P_Duracion,
             modoRevision: row.ModoRevision,
+            requiereContrasena: Boolean(row.P_RequiereContrasena),
             estadoAcceso: pruebaEstado, // DISPONIBLE, CERRADA, ETC.
             mensajeBloqueo: mensajeBloqueo,
             historial: {

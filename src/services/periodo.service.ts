@@ -1,7 +1,7 @@
 // src/services/periodo.service.ts
 import sql from 'mssql';
 import { poolPromise } from '../config/dbPool';
-import { ROLES, type Role } from '../constants/roles';
+import { normalizeRole, ROLES, type Role } from '../constants/roles';
 import { UserActor } from './recurso.service';
 import { registrarAccion } from './log.service';
 
@@ -24,7 +24,9 @@ export interface PeriodoRow {
 
 export const findAllPeriods = async (actor: UserActor): Promise<PeriodoRow[]> => {
     const pool = await poolPromise;
-    const esAdminOCoordinador = [ROLES.COORDINADOR, ROLES.COORDINADOR_GENERAL, ROLES.ADMINISTRADOR, ROLES.MASTER].includes(actor.perfil as any);
+    const esAdminOCoordinador = ADMIN_ROLES
+        .map(normalizeRole)
+        .includes(normalizeRole(actor.perfil));
 
     const result = await pool.request()
         .input('codigoUsuario', sql.SmallInt, actor.codigo)

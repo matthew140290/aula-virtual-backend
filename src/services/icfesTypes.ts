@@ -1,0 +1,21 @@
+export type CompetenciaPayload = { nombre: string; peso: number };
+export type CreateExamenPayload = {
+  titulo: string;
+  descripcion?: string;
+  periodicidad: 'TRIMESTRAL' | 'ANUAL';
+  trimestre?: number | null;
+  anio: number;
+  duracionMinutos: number;
+  numeroIntentos: number;
+  fechaInicio: string | Date;
+  fechaCierre: string | Date;
+  competencias: CompetenciaPayload[];
+};
+export type GenerarPreguntasPayload = { tema: string; textoBase: string; dificultad: 'BAJA' | 'MEDIA' | 'ALTA'; cantidad: number; replaceDraft?: boolean };
+export type UserActor = { codigo: number; perfil: string };
+export type OpcionDraft = { letra: 'A' | 'B' | 'C' | 'D'; texto: string; esCorrecta: boolean };
+export type PreguntaDraft = { textoPregunta: string; nombreCompetencia: string; peso: number; explicacionRespuesta?: string; opciones: OpcionDraft[] };
+export type PreguntaRow = { PreguntaGlobalID: number; ExamenGlobalID: number; CompetenciaID: number | null; NombreCompetencia: string | null; TextoPregunta: string; Peso: number; ExplicacionRespuesta: string | null; Orden: number };
+export type OpcionRow = { OpcionID: number; PreguntaGlobalID: number; Letra: 'A' | 'B' | 'C' | 'D'; TextoOpcion: string; EsCorrecta: boolean };
+export type RespuestaEntregaPayload = { preguntaGlobalId: number; opcionId: number | null };
+export type FiltroCoordinacion = { anio?: number; trimestre?: number; gradoCodigo?: number; cursoCodigo?: number };

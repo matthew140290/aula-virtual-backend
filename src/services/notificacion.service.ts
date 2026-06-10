@@ -1,6 +1,6 @@
 // src/services/notificacion.service.ts
 import sql from 'mssql';
-import { dbConfig } from '../config/database';
+import { poolPromise } from '../config/dbPool';
 import { sendWhatsAppMessage } from './whatsapp.service';
 import { buildResourceNotificationVariables } from './whatsapp-templates.service';
 
@@ -20,11 +20,42 @@ interface NotificationParams {
 
 export type WhatsAppTarget = 'NONE' | 'STUDENT_ONLY' | 'GUARDIAN_ONLY' | 'BOTH';
 
+interface NotificationRow {
+    NotificacionID: number;
+    Tipo: string;
+    Mensaje: string;
+    RecursoID: number | null;
+    FechaCreacion: Date;
+    Leido: boolean;
+    ActorNombre: string | null;
+    NombreAsignatura: string | null;
+    RecursoEliminado: boolean;
+    FechaCierreRecurso: Date | null;
+}
+
+interface NotificationCountRow {
+    total: number;
+}
+
+interface StudentNotificationRow {
+    [key: string]: unknown;
+    MatrículaNo: number;
+    PrimerNombre: string;
+    PrimerApellido: string;
+    TeléfonoEstudiante: string | null;
+    TeléfonoAcudiente: string | null;
+    TeléfonoMadre: string | null;
+    TeléfonoPadre: string | null;
+    NombreCompletoAcudiente: string | null;
+    NombreAsignatura: string;
+    ID_Usuario_Real: number | null;
+}
+
 // --- Funciones del Servicio ---
 
 
 export const getNotificaciones = async (userIdentity: UserIdentity, page: number, limit: number) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     const offset = (page - 1) * limit;
 
     const idPositivo = Math.abs(userIdentity.codigo);
@@ -85,7 +116,10 @@ export const getNotificaciones = async (userIdentity: UserIdentity, page: number
         .input('limit', sql.Int, limit)
         .query(query);
 
-        const recordsets = result.recordsets as sql.IRecordSet<any>[];
+        const recordsets = result.recordsets as unknown as [
+            sql.IRecordSet<NotificationRow>,
+            sql.IRecordSet<NotificationCountRow>,
+        ];
 
     
     return {
@@ -96,7 +130,7 @@ export const getNotificaciones = async (userIdentity: UserIdentity, page: number
 
 
 export const marcarComoLeidas = async (userIdentity: UserIdentity, ids?: number[]) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     const idPositivo = Math.abs(userIdentity.codigo);
     let query = `
         UPDATE Virtual.Notificaciones 
@@ -122,7 +156,7 @@ export const marcarComoLeidas = async (userIdentity: UserIdentity, ids?: number[
 
 
 export const createNotificacion = async (params: NotificationParams) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
 
     // Resolver Código real del destinatario
     const destPositivo = Math.abs(params.destinatario.codigo);
@@ -176,7 +210,7 @@ export const notificarDocentePorInteraccion = async (
     estudiante: { codigo: number, nombreCompleto: string },
     tipoAccion: 'TAREA_ENTREGADA' | 'FORO_PARTICIPACION' | 'ANUNCIO_RESPUESTA' | 'PRUEBA_FINALIZADA'
 ) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
 
     // 1. Buscar al Docente asociado a la asignatura de este recurso
     // La ruta es: Recurso -> Apartado -> Semana -> Asignatura -> AsignaciónAcadémica -> Docente
@@ -246,7 +280,7 @@ export const notificarEstudiantesDeCurso = async (
     actor: { codigo: number, perfil: string }, // El docente
     target: WhatsAppTarget
 ) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     console.log(`[WhatsApp] Iniciando proceso para recurso "${tituloRecurso}". Target recibido: "${target}"`);
     
     const queryActor = `
@@ -295,7 +329,7 @@ export const notificarEstudiantesDeCurso = async (
 
     const result = await pool.request()
         .input('apartadoId', sql.Int, apartadoId)
-        .query(querySelect);
+        .query<StudentNotificationRow>(querySelect);
 
     const estudiantes = result.recordset;
 
@@ -323,7 +357,7 @@ export const notificarEstudiantesDeCurso = async (
     const now = new Date();
     let insertCount = 0;
 
-    estudiantes.forEach((est: any) => {
+    estudiantes.forEach((est) => {
         // 🔥 VALIDACIÓN: Solo insertamos si el estudiante tiene un Usuario asociado
         // De lo contrario, la FK fallaría y rompería todo el proceso.
         if (est.ID_Usuario_Real) {
@@ -359,13 +393,13 @@ export const notificarEstudiantesDeCurso = async (
         return; 
     }
 
-    const whatsappPromises: Promise<any>[] = [];
+    const whatsappPromises: Array<Promise<string | null>> = [];
 
     // Recorremos cada estudiante para ver a quién enviamos
-    estudiantes.forEach((est: any) => {
+    estudiantes.forEach((est) => {
         const nombreEst = `${est.PrimerNombre} ${est.PrimerApellido}`;
         const tipoLegible = tipo.toLowerCase();
-        const telefonoEstudianteRaw = est.TelefonoEstudiante;
+        const telefonoEstudianteRaw = typeof est.TelefonoEstudiante === 'string' ? est.TelefonoEstudiante : null;
         const NombreAsignatura = est.NombreAsignatura;
         
 
@@ -430,7 +464,7 @@ export const notificarEstudiantesDeCurso = async (
 };
 
 export const deleteNotificaciones = async (userIdentity: UserIdentity, ids?: number[]) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     const idPositivo = Math.abs(userIdentity.codigo);
 
     const request = pool.request()
@@ -462,7 +496,7 @@ export const notificarEstudiantesEspecificos = async (
 ) => {
     if (!estudiantesIds || estudiantesIds.length === 0) return;
 
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     console.log(`[WhatsApp] Iniciando proceso PERSONALIZADO para recurso "${tituloRecurso}". Target: "${target}". Estudiantes VIP: ${estudiantesIds.length}`);
     
     const queryActor = `SELECT NombreCompleto FROM dbo.Usuarios WHERE Código = @codigo AND Perfil = @perfil`;
@@ -471,8 +505,6 @@ export const notificarEstudiantesEspecificos = async (
         .input('perfil', sql.NVarChar(96), actor.perfil)
         .query(queryActor);
     const nombreDocente = resultActor.recordset[0]?.NombreCompleto || 'Docente';
-
-    const idsList = estudiantesIds.join(',');
 
     // Solo buscamos a los estudiantes seleccionados cruzando con su asignatura
     const querySelect = `
@@ -491,7 +523,10 @@ export const notificarEstudiantesEspecificos = async (
             JOIN dbo.Asignaturas asig2 ON sem.CodigoAsignatura = asig2.Código
             WHERE r.RecursoID = @recursoId
         ) as asig
-        WHERE e.MatrículaNo IN (${idsList})
+        WHERE e.MatrículaNo IN (
+            SELECT TRY_CAST([value] AS INT)
+            FROM OPENJSON(@estudiantesIds)
+        )
           AND (e.Estado IS NULL OR e.Estado != 'Retirado')
         GROUP BY 
             e.MatrículaNo, e.PrimerNombre, e.PrimerApellido, e.Teléfono, e.TeléfonoAcudiente, e.TeléfonoMadre, e.TeléfonoPadre, e.NombreCompletoAcudiente, asig.Descripción
@@ -499,7 +534,8 @@ export const notificarEstudiantesEspecificos = async (
 
     const result = await pool.request()
         .input('recursoId', sql.Int, recursoId)
-        .query(querySelect);
+        .input('estudiantesIds', sql.NVarChar(sql.MAX), JSON.stringify(estudiantesIds))
+        .query<StudentNotificationRow>(querySelect);
 
     const estudiantes = result.recordset;
 
@@ -525,7 +561,7 @@ export const notificarEstudiantesEspecificos = async (
     const now = new Date();
     let insertCount = 0;
 
-    estudiantes.forEach((est: any) => {
+    estudiantes.forEach((est) => {
         if (est.ID_Usuario_Real) {
             table.rows.add(est.ID_Usuario_Real, 'Estudiante', tipo, mensaje, recursoId, now, 0, actor.codigo, actor.perfil);
             insertCount++;
@@ -540,10 +576,10 @@ export const notificarEstudiantesEspecificos = async (
     // Disparo a WhatsApp
     if (target === 'NONE') return; 
 
-    const whatsappPromises: Promise<any>[] = [];
+    const whatsappPromises: Array<Promise<string | null>> = [];
     const fechaPub = now.toLocaleDateString('es-CO');
 
-    estudiantes.forEach((est: any) => {
+    estudiantes.forEach((est) => {
         const nombreEst = `${est.PrimerNombre} ${est.PrimerApellido}`;
         
         const enviar = (telefono: string, nombreDestino: string) => {
@@ -560,12 +596,15 @@ export const notificarEstudiantesEspecificos = async (
         };
 
         if (target === 'STUDENT_ONLY' || target === 'BOTH') {
-            if (est.TelefonoEstudiante) enviar(est.TelefonoEstudiante, est.PrimerNombre);
+            if (typeof est.TelefonoEstudiante === 'string') enviar(est.TelefonoEstudiante, est.PrimerNombre);
         }
 
         if (target === 'GUARDIAN_ONLY' || target === 'BOTH') {
-            const telefonoPadre = est.TeléfonoAcudiente || est.TeléfonoMadre || est.TeléfonoPadre;
-            const nombrePadre = est.TeléfonoAcudiente ? (est.NombreCompletoAcudiente || 'Acudiente') : (est.TeléfonoMadre ? 'Madre de familia' : 'Padre de familia');
+            const telefonoPadre = [est.TelefonoAcudiente, est.TelefonoMadre, est.TelefonoPadre]
+                .find((value): value is string => typeof value === 'string' && value.length > 0) ?? '';
+            const nombrePadre = typeof est.TelefonoAcudiente === 'string'
+              ? (est.NombreCompletoAcudiente || 'Acudiente')
+              : (typeof est.TelefonoMadre === 'string' ? 'Madre de familia' : 'Padre de familia');
             
             if (telefonoPadre) enviar(telefonoPadre, nombrePadre);
         }

@@ -1,9 +1,16 @@
 // src/controllers/tarea.controller.ts
 import { Request, Response } from 'express';
 import * as tareaService from '../services/tarea.service';
-import { uploadGeneral } from './recurso.controller';
+import { uploadDiskGeneral } from '../config/multer.config';
 import { notificarDocentePorInteraccion } from '../services/notificacion.service';
 import { asyncHandler } from '../utils/asyncHandler';
+import { getErrorMessage } from '../utils/errors';
+
+const getContenidoHtml = (value: unknown): string => {
+    if (typeof value !== 'object' || value === null) return '';
+    const contenidoHTML = (value as Record<string, unknown>).contenidoHTML;
+    return typeof contenidoHTML === 'string' ? contenidoHTML : '';
+};
 
 export const getEntregasPorTarea = asyncHandler(async (req: Request, res: Response) => {
         const recursoId = Number(req.params.id);
@@ -30,8 +37,12 @@ export const guardarCalificacion = asyncHandler(async (req: Request, res: Respon
 });
 
 export const crearEntrega = (req: Request, res: Response) => {
-    uploadGeneral(req, res, async (err: any) => {
-        if (err) return res.status(400).json({ message: err.message || 'Error al subir archivo' });
+    const upload = uploadDiskGeneral.single('archivo');
+
+    upload(req, res, async (err: unknown) => {
+        if (err) {
+            return res.status(400).json({ message: getErrorMessage(err, 'Error al subir archivo') });
+        }
 
         try {
             const recursoId = Number(req.params.id); 
@@ -40,7 +51,7 @@ export const crearEntrega = (req: Request, res: Response) => {
             if (!usuario) return res.status(401).json({ message: 'No autorizado' });
 
 
-            let bodyData = {};
+            let bodyData: unknown = {};
             if (req.body.jsonData) {
                 try {
                     bodyData = JSON.parse(req.body.jsonData);
@@ -53,7 +64,7 @@ export const crearEntrega = (req: Request, res: Response) => {
             await tareaService.guardarEntregaEstudiante({
                 recursoId: recursoId,
                 matriculaNo: usuario.codigo,
-                contenidoHTML: (bodyData as any).contenidoHTML || '',
+                contenidoHTML: getContenidoHtml(bodyData),
                 archivo: req.file // Pasamos el buffer
             });
 
@@ -65,9 +76,9 @@ export const crearEntrega = (req: Request, res: Response) => {
 
             res.status(201).json({ message: 'Entrega realizada con éxito.' });
 
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Error al crear entrega:', error);
-            res.status(500).json({ message: error.message || 'Error interno' });
+            res.status(500).json({ message: getErrorMessage(error, 'Error interno') });
         }
     });
 };

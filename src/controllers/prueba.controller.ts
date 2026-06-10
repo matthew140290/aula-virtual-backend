@@ -3,6 +3,7 @@ import { Request, Response } from 'express';
 import * as pruebaService from '../services/prueba.service'; // Crearemos este servicio en un momento
 import { notificarDocentePorInteraccion } from '../services/notificacion.service';
 import { asyncHandler } from '../utils/asyncHandler';
+import { normalizeRole } from '../constants/roles';
 
 
 
@@ -12,21 +13,51 @@ export const iniciarPrueba = asyncHandler(async (req: Request, res: Response) =>
         const matriculaNo = req.user?.codigo;
         if (!matriculaNo) return res.status(401).json({ message: 'No autorizado' });
 
-        const data = await pruebaService.iniciarPrueba(pruebaId, Number(matriculaNo));
-        res.status(201).json(data);
+        const contrasena = typeof req.body?.contrasena === 'string' ? req.body.contrasena : undefined;
+
+        try {
+            const data = await pruebaService.iniciarPrueba(pruebaId, Number(matriculaNo), contrasena);
+            res.status(201).json(data);
+        } catch (error) {
+            if (error instanceof Error) {
+                return res.status(400).json({ message: error.message });
+            }
+            throw error;
+        }
 });
 
 export const entregarPrueba = asyncHandler(async (req: Request, res: Response) => {
 
         const { resultadoId, respuestas, duracionSegundos } = req.body;
+        const matriculaNo = req.user?.codigo;
+        if (!matriculaNo) return res.status(401).json({ message: 'No autorizado' });
         
-        if (!resultadoId) return res.status(400).json({ message: 'Falta resultadoId' });
+        if (!Number.isFinite(Number(resultadoId))) {
+            return res.status(400).json({ message: 'resultadoId inválido' });
+        }
 
-        const resultado = await pruebaService.entregarPrueba(
-            Number(resultadoId), 
-            respuestas, 
-            duracionSegundos
-        );
+        if (!Array.isArray(respuestas)) {
+            return res.status(400).json({ message: 'El campo respuestas debe ser un arreglo.' });
+        }
+
+        if (!Number.isFinite(Number(duracionSegundos)) || Number(duracionSegundos) < 0) {
+            return res.status(400).json({ message: 'duracionSegundos inválida.' });
+        }
+
+        let resultado;
+        try {
+            resultado = await pruebaService.entregarPrueba(
+                Number(resultadoId),
+                respuestas,
+                Number(duracionSegundos),
+                Number(matriculaNo)
+            );
+        } catch (error) {
+            if (error instanceof Error) {
+                return res.status(400).json({ message: error.message });
+            }
+            throw error;
+        }
 
         if (req.user && req.user.perfil === 'Estudiante' && resultado.recursoId) {
             notificarDocentePorInteraccion(
@@ -40,10 +71,61 @@ export const entregarPrueba = asyncHandler(async (req: Request, res: Response) =
 
 });
 
+export const abandonarPrueba = asyncHandler(async (req: Request, res: Response) => {
+    const pruebaId = Number(req.params.pruebaId);
+    const matriculaNo = req.user?.codigo;
+    const { resultadoId, duracionSegundos } = req.body || {};
+
+    if (!matriculaNo) {
+        return res.status(401).json({ message: 'No autorizado' });
+    }
+
+    if (!Number.isFinite(pruebaId) || !Number.isFinite(Number(resultadoId))) {
+        return res.status(400).json({ message: 'Parámetros inválidos para abandono de prueba.' });
+    }
+
+    const abandonada = await pruebaService.abandonarPrueba(
+        pruebaId,
+        Number(resultadoId),
+        Number(matriculaNo),
+        Number.isFinite(Number(duracionSegundos)) ? Number(duracionSegundos) : undefined
+    );
+
+    return res.status(200).json({ abandonada });
+});
+
+export const heartbeatPrueba = asyncHandler(async (req: Request, res: Response) => {
+    const pruebaId = Number(req.params.pruebaId);
+    const matriculaNo = req.user?.codigo;
+    const { resultadoId, duracionSegundos } = req.body || {};
+
+    if (!matriculaNo) {
+        return res.status(401).json({ message: 'No autorizado' });
+    }
+
+    if (!Number.isFinite(pruebaId) || !Number.isFinite(Number(resultadoId))) {
+        return res.status(400).json({ message: 'Parámetros inválidos para heartbeat.' });
+    }
+
+    const data = await pruebaService.heartbeatPrueba(
+        pruebaId,
+        Number(resultadoId),
+        Number(matriculaNo),
+        Number.isFinite(Number(duracionSegundos)) ? Number(duracionSegundos) : undefined
+    );
+
+    return res.status(200).json(data);
+});
+
 
 export const getPruebaDetalles = asyncHandler(async (req: Request, res: Response) => {
     const id  = Number(req.params.pruebaId); // puede ser RecursoID o PruebaID
-    const prueba = await pruebaService.getPruebaDetalles(id);
+    const isStudent = normalizeRole(req.user?.perfil || '') === normalizeRole('Estudiante');
+    const prueba = await pruebaService.getPruebaDetalles(id, {
+        includeAnswers: !isStudent,
+        includeSecret: !isStudent,
+        viewerMatriculaNo: isStudent ? Number(req.user?.codigo) : undefined,
+    });
     if (!prueba) return res.status(404).json({ message: 'Prueba no encontrada.' });
     res.status(200).json(prueba);
 });
@@ -85,35 +167,30 @@ export const deletePregunta = asyncHandler(async (req: Request, res: Response) =
         res.status(200).json({ message: 'Pregunta eliminada con éxito.' });
 });
 
-// Banco de Preguntas (Simulado por ahora)
 export const getBancoPreguntas = asyncHandler(async (req: Request, res: Response) => {
-        res.status(200).json([
-            {
-                PreguntaBancoID: 1,
-                TextoPregunta: '¿Cuál es la capital de Francia?',
-                Respuestas: [
-                    { RespuestaID: 1, TextoRespuesta: 'Berlín', EsCorrecta: false },
-                    { RespuestaID: 2, TextoRespuesta: 'Madrid', EsCorrecta: false },
-                    { RespuestaID: 3, TextoRespuesta: 'París', EsCorrecta: true },
-                    { RespuestaID: 4, TextoRespuesta: 'Roma', EsCorrecta: false },
-                ]
-            },
-            {
-                PreguntaBancoID: 2,
-                TextoPregunta: 'El ciclo del agua se compone de:',
-                Respuestas: [
-                    { RespuestaID: 5, TextoRespuesta: 'Evaporación, condensación, precipitación', EsCorrecta: true },
-                    { RespuestaID: 6, TextoRespuesta: 'Erosión, sedimentación, transporte', EsCorrecta: false },
-                ]
-            }
-        ]);
+        const banco = await pruebaService.getBancoPreguntas();
+        res.status(200).json(banco);
 });
 
 export const addPreguntaToBanco = asyncHandler(async (req: Request, res: Response) => {
-        const preguntaData = req.body; // Contiene texto, tipo, respuestas
-        // Implementación real insertaría en Virtual.BancoPreguntas
-        console.log('Guardando en banco:', preguntaData);
-        res.status(201).json({ message: 'Pregunta guardada en el banco con éxito.' });
+        const preguntaData = req.body;
+
+        if (!preguntaData || typeof preguntaData !== 'object') {
+            return res.status(400).json({ message: 'Payload inválido para guardar en banco.' });
+        }
+
+        try {
+            const result = await pruebaService.addPreguntaToBanco(preguntaData, req.user ? {
+                codigo: req.user.codigo,
+                perfil: req.user.perfil,
+            } : undefined);
+            res.status(201).json({ message: 'Pregunta guardada en el banco con éxito.', ...result });
+        } catch (error) {
+            if (error instanceof Error) {
+                return res.status(400).json({ message: error.message });
+            }
+            throw error;
+        }
 });
 
 export const getEstudiantesParaPrueba = asyncHandler(async (req: Request, res: Response) => {
@@ -145,7 +222,17 @@ export const eliminarSimulacro = asyncHandler(async (req: Request, res: Response
 export const guardarCalificacion = asyncHandler(async (req: Request, res: Response) => {
     const resultadoId = Number(req.params.resultadoId);
     const { calificacionFinal, retroalimentacion } = req.body;
-    await pruebaService.setResultadoCalificacion(resultadoId, Number(calificacionFinal), retroalimentacion);
+
+    if (!Number.isFinite(resultadoId)) {
+        return res.status(400).json({ message: 'resultadoId inválido.' });
+    }
+
+    const nota = Number(calificacionFinal);
+    if (!Number.isFinite(nota) || nota < 0 || nota > 5) {
+        return res.status(400).json({ message: 'La calificación debe estar entre 0 y 5.' });
+    }
+
+    await pruebaService.setResultadoCalificacion(resultadoId, nota, retroalimentacion);
     res.json({ message: 'Calificación guardada.' });
 });
 
@@ -179,6 +266,15 @@ export const crearSimulacro = asyncHandler(async (req: Request, res: Response) =
     if (!Number.isFinite(pruebaId) || !Number.isFinite(body.matriculaNo)) {
       return res.status(400).json({ message: 'Parámetros inválidos.' });
     }
+
+    if (typeof body.calificacion === 'number' && (body.calificacion < 0 || body.calificacion > 5)) {
+      return res.status(400).json({ message: 'calificacion inválida. Debe estar entre 0 y 5.' });
+    }
+
+    if (typeof body.duracionSegundos === 'number' && body.duracionSegundos < 0) {
+      return res.status(400).json({ message: 'duracionSegundos inválida.' });
+    }
+
     const id = await pruebaService.createSimulacro(
       pruebaId,
       Number(body.matriculaNo),

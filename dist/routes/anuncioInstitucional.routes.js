@@ -1,0 +1,20 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+//src/routes/anuncioInstitucional.routes.ts
+const express_1 = require("express");
+const auth_middleware_1 = require("../middleware/auth.middleware");
+const roles_1 = require("../constants/roles");
+const anuncioInstitucional_controller_1 = require("../controllers/anuncioInstitucional.controller");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.protect);
+router.get('/anuncios-institucionales', anuncioInstitucional_controller_1.getAnunciosInstitucionales);
+router.get('/anuncios-institucionales/audiencia-data', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.getAudienciaData);
+router.get('/anuncios-institucionales/hierarchy-data', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.getHierarchyData);
+router.get('/anuncios-institucionales/docentes', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.getDocentes);
+router.get('/anuncios-institucionales/estudiantes', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.getEstudiantes);
+router.get('/anuncios-institucionales/carga-docente/:codigo', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.getCargaDocente);
+router.get('/anuncios-institucionales/buscar-usuarios', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.buscarUsuarios);
+router.post('/anuncios-institucionales', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.createAnuncioInstitucional);
+router.put('/anuncios-institucionales/:id', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.updateAnuncioInstitucional);
+router.delete('/anuncios-institucionales/:id', (0, auth_middleware_1.authorize)([roles_1.ROLES.COORDINADOR, roles_1.ROLES.COORDINADOR_GENERAL, roles_1.ROLES.ADMINISTRADOR, roles_1.ROLES.MASTER]), anuncioInstitucional_controller_1.deleteAnuncioInstitucional);
+exports.default = router;

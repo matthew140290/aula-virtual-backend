@@ -1,13 +1,15 @@
 // src/controllers/auth.controller.ts
 import { Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
 import * as authService from '../services/auth.service';
 import * as estudianteService from '../services/estudiante.service';
 import { DecodedUserToken } from '../middleware/auth.middleware'; // Importar la interfaz
 import { asyncHandler } from '../utils/asyncHandler';
-import { ROLES } from '../constants/roles';
+import { normalizeRole, ROLES } from '../constants/roles';
+import { signUserToken, verifyUserToken } from '../config/authToken';
+import { getTenantId } from '../config/tenantContext';
+import type { StudentViewContext } from '../types/auth';
 
-const JWT_SECRET = process.env.JWT_SECRET!;
+
 
 
 
@@ -36,16 +38,20 @@ export const ssoLogin = asyncHandler(async (req: Request, res: Response) => {
     const { token: ssoToken } = req.body;
 
     try {
-        const decoded = jwt.verify(ssoToken, JWT_SECRET) as { codigo: number, perfil: string, nombre: string };
+        const decoded = verifyUserToken(ssoToken);
+        if (decoded.tenantId !== getTenantId()) {
+            return res.status(403).json({ message: 'El token SSO no pertenece a este tenant.' });
+        }
         
         const sessionTokenPayload: DecodedUserToken = {
             codigo: decoded.codigo,
             perfil: decoded.perfil,
             nombre: decoded.nombre,
-            nombreCompleto: decoded.nombre
+            nombreCompleto: decoded.nombreCompleto,
+            tenantId: decoded.tenantId,
         };
         
-        const sessionToken = jwt.sign(sessionTokenPayload, JWT_SECRET, { expiresIn: '8h' });
+        const sessionToken = signUserToken(sessionTokenPayload, '8h');
 
         console.log(`✅ [SSO_SUCCESS] ${decoded.nombre} autenticado vía SSO.`);
         res.status(200).json({
@@ -65,30 +71,45 @@ export const toggleStudentView = asyncHandler(async (req: Request, res: Response
     // --- VOLVER A LA VISTA ORIGINAL ---
     if (originalToken) {
         res.cookie('originalToken', '', { expires: new Date(0) });
-        const decodedOriginal = jwt.verify(originalToken, JWT_SECRET) as DecodedUserToken;
+        const decodedOriginal = verifyUserToken(originalToken);
+        if (decodedOriginal.tenantId !== getTenantId()) {
+            return res.status(403).json({ message: 'La sesion original no pertenece a este tenant.' });
+        }
         return res.status(200).json({ token: originalToken, user: decodedOriginal });
     }
 
     // --- CAMBIAR A VISTA DE ESTUDIANTE ---
-    const allowedRolesToToggle = [ROLES.DOCENTE, ROLES.DIRECTOR_GRUPO, ROLES.COORDINADOR, ROLES.COORDINADOR_GENERAL, ROLES.ADMINISTRADOR, ROLES.MASTER];
+    const allowedRolesToToggle = new Set([
+        ROLES.DOCENTE,
+        ROLES.DIRECTOR_GRUPO,
+        ROLES.COORDINADOR,
+        ROLES.COORDINADOR_GENERAL,
+        ROLES.ADMINISTRADOR,
+        ROLES.MASTER,
+    ].map(normalizeRole));
     
     // Validamos usando nuestras constantes estrictas
-    if (allowedRolesToToggle.includes(req.user!.perfil as any)) {
+    if (allowedRolesToToggle.has(normalizeRole(req.user!.perfil))) {
         const currentToken = req.headers.authorization?.split(' ')[1];
         if (!currentToken) throw new Error('Token actual no encontrado.');
 
         const contexto = await estudianteService.findContextoAcademicoByDocente(req.user!.codigo);
 
-        const studentViewPayload: DecodedUserToken & { contexto: any } = {
+        const studentContext: StudentViewContext = contexto || {
+            NombreGrado: 'Grado General',
+            NombreCurso: 'Institucional',
+        };
+        const studentViewPayload: DecodedUserToken = {
             codigo: req.user!.codigo,
             nombre: req.user!.nombre,
             nombreCompleto: req.user!.nombreCompleto,
             perfil: ROLES.ESTUDIANTE,
-            originalPerfil: req.user!.perfil, 
-            contexto: contexto || { NombreGrado: 'Grado General', NombreCurso: 'Institucional' }
+            tenantId: req.user!.tenantId,
+            originalPerfil: req.user!.perfil,
+            contexto: studentContext,
         };
 
-        const studentToken = jwt.sign(studentViewPayload, JWT_SECRET, { expiresIn: '1h' });
+        const studentToken = signUserToken(studentViewPayload, '1h');
         
         res.cookie('originalToken', currentToken, {
             httpOnly: true,

@@ -1,6 +1,6 @@
 //src/service/usuario.service
 import sql from 'mssql';
-import { dbConfig } from '../config/database';
+import { poolPromise } from '../config/dbPool';
 
 // Obtiene todos los datos de un usuario por su código
 export const findUserById = async (codigo: number, perfil: string) => {
@@ -12,7 +12,7 @@ export const findUserById = async (codigo: number, perfil: string) => {
     console.log(`   - Input Normalizado: ID=${codigoBusqueda}, Perfil='${perfilNorm}'`);
 
     
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     let query: string;
     let idType: sql.ISqlType;
     
@@ -76,7 +76,7 @@ export const findUserById = async (codigo: number, perfil: string) => {
 
 // Actualiza o inserta la foto de perfil (lógica de "UPSERT")
 export const updateUserPhoto = async (codigo: number, perfil: string, photoBuffer: Buffer) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     const codigoBusqueda = Math.abs(codigo);
     
     const esDocente = perfil.includes('Docente') || perfil.includes('Director');
@@ -99,7 +99,7 @@ export const updateUserPhoto = async (codigo: number, perfil: string, photoBuffe
 };
 
 export const findUserPhotoById = async (codigo: number, perfil: string) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     const codigoBusqueda = Math.abs(codigo);
     const esDocente = perfil.includes('Docente') || perfil.includes('Director');
     const photoTable = esDocente ? 'dbo.FotografíasDocentes' : 'dbo.FotografíasEstudiantes';

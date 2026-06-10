@@ -39,6 +39,7 @@ router.patch('/:id/toggle-visibility', verificarPeriodoPorRecurso(), recursoCont
 router.delete('/:id', verificarPeriodoPorRecurso(), recursoController.deleteRecurso);
 router.post('/:id/clone', recursoController.cloneRecurso);
 router.post('/:id/vista', authorize(['Estudiante']), recursoController.registrarVistaRecurso);
+router.get('/:id/vistas', authorize(['Docente', 'Director de grupo', 'Coordinador', 'Administrador']), recursoController.getVistasRecurso);
 
 // --- Rutas de Carpetas ---
 router.get('/carpeta/:recursoId/archivos', recursoController.getArchivosCarpeta);

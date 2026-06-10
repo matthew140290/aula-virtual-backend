@@ -1,5 +1,6 @@
 //src/service/tarea.service
 import sql from 'mssql';
+import { promises as fs } from 'fs';
 import { poolPromise } from '../config/dbPool';
 
 
@@ -38,6 +39,33 @@ interface UpsertPayload  {
     matriculaNo: number;
     calificacion: number | null;
     comentariosProfesor: string | null;
+}
+
+interface TareaInfoRow {
+  TareaID: number;
+  Titulo: string;
+  PuntajeMaximo: number;
+  FechaVencimiento: Date;
+  InstruccionesHTML: string;
+  FechaPublicacion: Date;
+}
+
+interface ArchivoTareaRow {
+  ArchivoTareaID: number;
+  NombreOriginal: string;
+  ArchivoMimeType: string;
+}
+
+interface EntregaRow {
+  matriculaNo: number;
+  nombreCompleto: string;
+  numeroDocumento: string;
+  fechaEntrega: Date | null;
+  calificacion: number | null;
+  fechaCalificacion: Date | null;
+  comentariosProfesor: string | null;
+  comentariosEstudiante: string | null;
+  urlArchivo: string | null;
 }
 
 export const findEntregasByRecursoId = async (recursoId: number): Promise<DatosCalificacion> => {
@@ -80,12 +108,25 @@ export const findEntregasByRecursoId = async (recursoId: number): Promise<DatosC
                 FROM dbo.Asignaturas a
                 JOIN Virtual.Tareas t ON t.CodigoAsignatura = a.Código
                 JOIN dbo.Estudiantes e ON a.CódigoCurso = e.CódigoCurso
-                LEFT JOIN Virtual.EntregasTareas et ON e.MatrículaNo = et.MatriculaNo AND et.TareaID = t.TareaID
+                LEFT JOIN Virtual.EntregasTareas et ON ABS(e.MatrículaNo) = ABS(et.MatriculaNo) AND et.TareaID = t.TareaID
                 WHERE t.TareaID = @TareaID AND (e.Estado IS NULL OR e.Estado != 'Retirado')
+                  AND (
+                    NOT EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = t.RecursoID)
+                    OR EXISTS (
+                        SELECT 1
+                        FROM Virtual.RecursosEstudiantes re
+                        WHERE re.RecursoID = t.RecursoID
+                          AND ABS(re.MatriculaNo) = ABS(e.MatrículaNo)
+                    )
+                  )
                 ORDER BY nombreCompleto;
             `);
 
-            const recordsets = result.recordsets as sql.IRecordSet<any>[];
+            const recordsets = result.recordsets as unknown as [
+              sql.IRecordSet<TareaInfoRow>,
+              sql.IRecordSet<ArchivoTareaRow>,
+              sql.IRecordSet<EntregaRow>,
+            ];
 
         // El driver mssql devuelve 'recordsets' (un array de arrays)
         const tareaInfoRows = recordsets[0];     
@@ -108,7 +149,7 @@ export const findEntregasByRecursoId = async (recursoId: number): Promise<DatosC
         } : null;
 
         // --- Procesar Entregas ---
-        const entregas: EntregaEstudiante[] = entregasRows.map((row: any) => {
+        const entregas: EntregaEstudiante[] = entregasRows.map((row) => {
             let estadoEntrega: EntregaEstudiante['estadoEntrega'] = 'Sin entregar';
             if (row.fechaEntrega) {
                 // Comparación de fechas simple
@@ -120,9 +161,9 @@ export const findEntregasByRecursoId = async (recursoId: number): Promise<DatosC
                 matriculaNo: row.matriculaNo,
                 nombreCompleto: row.nombreCompleto,
                 numeroDocumento: row.numeroDocumento,
-                fechaEntrega: row.fechaEntrega,
+                fechaEntrega: row.fechaEntrega ? row.fechaEntrega.toISOString() : null,
                 calificacion: row.calificacion,
-                fechaCalificacion: row.fechaCalificacion,
+                fechaCalificacion: row.fechaCalificacion ? row.fechaCalificacion.toISOString() : null,
                 comentariosProfesor: row.comentariosProfesor,
                 comentariosEstudiante: row.comentariosEstudiante,
                 urlArchivo: row.urlArchivo,
@@ -136,8 +177,8 @@ export const findEntregasByRecursoId = async (recursoId: number): Promise<DatosC
                 titulo: tareaInfo.Titulo,
                 instruccionesHTML: tareaInfo.InstruccionesHTML,
                 puntajeMaximo: tareaInfo.PuntajeMaximo,
-                fechaVencimiento: tareaInfo.FechaVencimiento,
-                fechaPublicacion: tareaInfo.FechaPublicacion,
+                fechaVencimiento: tareaInfo.FechaVencimiento.toISOString(),
+                fechaPublicacion: tareaInfo.FechaPublicacion.toISOString(),
                 archivoAdjunto: archivoAdjunto
             },
             entregas,
@@ -150,6 +191,7 @@ export const findEntregasByRecursoId = async (recursoId: number): Promise<DatosC
 };
 
 export const upsertCalificacion = async (data: UpsertPayload) => {
+    const matriculaNo = Math.abs(data.matriculaNo);
     const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
     try {
@@ -165,11 +207,30 @@ export const upsertCalificacion = async (data: UpsertPayload) => {
         }
         const tareaId = tareaResult.recordset[0].TareaID;
 
+        const audienciaResult = await request
+            .input('audienciaMatriculaNo', sql.Int, matriculaNo)
+            .query(`
+                SELECT
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = @recursoId
+                    ) THEN 1 ELSE 0 END AS EsPersonalizado,
+                    CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM Virtual.RecursosEstudiantes re
+                        WHERE re.RecursoID = @recursoId
+                          AND ABS(re.MatriculaNo) = @audienciaMatriculaNo
+                    ) THEN 1 ELSE 0 END AS Permitido;
+            `);
+
+        if (audienciaResult.recordset[0]?.EsPersonalizado === 1 && audienciaResult.recordset[0]?.Permitido !== 1) {
+            throw new Error('El estudiante no pertenece a la audiencia personalizada de esta tarea.');
+        }
+
         // Primero, verificamos si ya existe una entrega para este estudiante y tarea.
         const existingEntrega = await request
             .input('tareaId', sql.Int, tareaId)
-            .input('matriculaNo', sql.Int, data.matriculaNo)
-            .query('SELECT EntregaID FROM Virtual.EntregasTareas WHERE TareaID = @tareaId AND MatriculaNo = @matriculaNo');
+            .input('matriculaNo', sql.Int, matriculaNo)
+            .query('SELECT TOP 1 EntregaID FROM Virtual.EntregasTareas WHERE TareaID = @tareaId AND ABS(MatriculaNo) = @matriculaNo ORDER BY EntregaID DESC');
         
         if (existingEntrega.recordset.length > 0) {
             const entregaId = existingEntrega.recordset[0].EntregaID;
@@ -206,6 +267,7 @@ export const upsertCalificacion = async (data: UpsertPayload) => {
 };
 
 export const guardarEntregaEstudiante = async (data: { recursoId: number, matriculaNo: number, contenidoHTML: string, archivo?: Express.Multer.File }) => {
+    const matriculaNo = Math.abs(data.matriculaNo);
     const pool = await poolPromise;
     const tx = new sql.Transaction(pool);
     
@@ -215,9 +277,23 @@ export const guardarEntregaEstudiante = async (data: { recursoId: number, matric
         // 1. Obtener TareaID
         const tareaRes = await new sql.Request(tx)
             .input('recursoId', sql.Int, data.recursoId)
-            .query('SELECT TareaID, PermiteEntregasTardias, FechaVencimiento FROM Virtual.Tareas WHERE RecursoID = @recursoId');
+            .input('matriculaNo', sql.Int, matriculaNo)
+            .query(`
+                SELECT TareaID, PermiteEntregasTardias, FechaVencimiento
+                FROM Virtual.Tareas
+                WHERE RecursoID = @recursoId
+                  AND (
+                    NOT EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = @recursoId)
+                    OR EXISTS (
+                        SELECT 1
+                        FROM Virtual.RecursosEstudiantes re
+                        WHERE re.RecursoID = @recursoId
+                          AND ABS(re.MatriculaNo) = @matriculaNo
+                    )
+                  )
+            `);
         
-        if (!tareaRes.recordset.length) throw new Error('Tarea no encontrada');
+        if (!tareaRes.recordset.length) throw new Error('Tarea no encontrada o no disponible para este estudiante');
         const tareaInfo = tareaRes.recordset[0];
         const tareaId = tareaInfo.TareaID;
 
@@ -230,8 +306,8 @@ export const guardarEntregaEstudiante = async (data: { recursoId: number, matric
         // 2. Upsert Entrega
         const check = await new sql.Request(tx)
             .input('tareaId', sql.Int, tareaId)
-            .input('matriculaNo', sql.Int, data.matriculaNo)
-            .query('SELECT EntregaID FROM Virtual.EntregasTareas WHERE TareaID = @tareaId AND MatriculaNo = @matriculaNo');
+            .input('matriculaNo', sql.Int, matriculaNo)
+            .query('SELECT TOP 1 EntregaID FROM Virtual.EntregasTareas WHERE TareaID = @tareaId AND ABS(MatriculaNo) = @matriculaNo ORDER BY EntregaID DESC');
 
         let entregaId = 0;
 
@@ -253,7 +329,7 @@ export const guardarEntregaEstudiante = async (data: { recursoId: number, matric
             // INSERT: Eliminamos 'EstadoEntrega' de aquí también
             const ins = await new sql.Request(tx)
                 .input('tareaId', sql.Int, tareaId)
-                .input('matriculaNo', sql.Int, data.matriculaNo)
+                .input('matriculaNo', sql.Int, matriculaNo)
                 .input('fecha', sql.DateTime, new Date())
                 .input('comentario', sql.NVarChar(sql.MAX), comentariosEstudiante)
                 .query(`
@@ -266,6 +342,16 @@ export const guardarEntregaEstudiante = async (data: { recursoId: number, matric
 
         // 3. Guardar Archivo (Igual que antes)
         if (data.archivo) {
+            const archivoBuffer = data.archivo.buffer?.length
+                ? data.archivo.buffer
+                : data.archivo.path
+                    ? await fs.readFile(data.archivo.path)
+                    : null;
+
+            if (!archivoBuffer) {
+                throw new Error('No se pudo leer el archivo adjunto.');
+            }
+
             await new sql.Request(tx).input('entregaId', sql.Int, entregaId).query('DELETE FROM Virtual.ArchivosEntrega WHERE EntregaID = @entregaId');
 
             await new sql.Request(tx)
@@ -273,7 +359,7 @@ export const guardarEntregaEstudiante = async (data: { recursoId: number, matric
                 .input('nombre', sql.NVarChar(255), data.archivo.originalname)
                 .input('url', sql.NVarChar(500), `/tareas/entregas/${entregaId}/archivo`)
                 .input('tamanoKB', sql.Int, Math.ceil(data.archivo.size / 1024))
-                .input('data', sql.VarBinary(sql.MAX), data.archivo.buffer)
+                .input('data', sql.VarBinary(sql.MAX), archivoBuffer)
                 .input('mime', sql.VarChar(100), data.archivo.mimetype)
                 
                 .query(`
@@ -282,6 +368,10 @@ export const guardarEntregaEstudiante = async (data: { recursoId: number, matric
                     VALUES 
                         (@entregaId, @nombre, @url, @tamanoKB, GETDATE(), @data, @mime);
                 `);
+
+            if (data.archivo.path) {
+                await fs.unlink(data.archivo.path).catch(() => {});
+            }
         }
 
         await tx.commit();

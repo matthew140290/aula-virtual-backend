@@ -194,6 +194,25 @@ const resolverPeriodoPorPrueba = async (pool: sql.ConnectionPool, pruebaId: numb
 };
 
 /**
+ * Resuelve el NumeroPeriodo a partir de una pregunta de prueba.
+ * Cadena: preguntaId -> Pruebas_Preguntas.PruebaID -> Pruebas -> Recursos -> Apartados -> Semanas
+ */
+const resolverPeriodoPorPreguntaPrueba = async (pool: sql.ConnectionPool, preguntaId: number): Promise<number | null> => {
+    const result = await pool.request()
+        .input('preguntaId', sql.Int, preguntaId)
+        .query<{ NumeroPeriodo: number }>(`
+            SELECT s.NumeroPeriodo
+            FROM Virtual.Pruebas_Preguntas pp
+            JOIN Virtual.Pruebas p ON pp.PruebaID = p.PruebaID
+            JOIN Virtual.Recursos r ON p.RecursoID = r.RecursoID
+            JOIN Virtual.Apartados a ON r.ApartadoID = a.ApartadoID
+            JOIN Virtual.Semanas s ON a.SemanaID = s.SemanaID
+            WHERE pp.PreguntaID = @preguntaId
+        `);
+    return result.recordset.length > 0 ? result.recordset[0].NumeroPeriodo : null;
+};
+
+/**
  * Resuelve el NumeroPeriodo a partir de un entradaId de foro.
  * Cadena: entradaId → Virtual.ForoEntradas.RecursoID → Recursos → Apartados → Semanas
  */
@@ -296,6 +315,48 @@ export const verificarPeriodoPorPrueba = () => {
             next();
         } catch (error: unknown) {
             console.error('Error en middleware verificarPeriodoPorPrueba:', error);
+            next();
+        }
+    };
+};
+
+/**
+ * Middleware factory: verifica periodo abierto usando preguntaId en params.
+ * Para rutas PUT/DELETE sobre /pruebas/preguntas/:preguntaId.
+ */
+export const verificarPeriodoPorPreguntaPrueba = () => {
+    return async (req: Request, res: Response, next: NextFunction): Promise<void | Response> => {
+        if (!req.user) {
+            return res.status(401).json({ message: 'No autorizado.' });
+        }
+
+        if (ADMIN_ROLES.includes(req.user.perfil)) {
+            return next();
+        }
+
+        try {
+            const preguntaId = Number(req.params.preguntaId);
+            if (!preguntaId || isNaN(preguntaId)) {
+                return next();
+            }
+
+            const pool = await poolPromise;
+            const numeroPeriodo = await resolverPeriodoPorPreguntaPrueba(pool, preguntaId);
+            if (numeroPeriodo === null) {
+                return next();
+            }
+
+            const { abierto, razon } = await verificarPeriodoAbierto(pool, numeroPeriodo, req.user.codigo);
+            if (!abierto) {
+                return res.status(403).json({
+                    message: `No puedes realizar esta accion. ${razon}`,
+                    code: 'PERIODO_CERRADO'
+                });
+            }
+
+            next();
+        } catch (error: unknown) {
+            console.error('Error en middleware verificarPeriodoPorPreguntaPrueba:', error);
             next();
         }
     };

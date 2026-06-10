@@ -1,11 +1,12 @@
 // src/services/auth.service.ts
 import sql from 'mssql';
 import { poolPromise } from '../config/dbPool'; // Crearemos este archivo ahora
-import jwt from 'jsonwebtoken';
 import { DecodedUserToken } from '../middleware/auth.middleware';
 import { registrarAccion } from './log.service';
+import { getTenantId } from '../config/tenantContext';
+import { signUserToken } from '../config/authToken';
 
-const JWT_SECRET = process.env.JWT_SECRET!;
+
 
 // Interfaz para definir la estructura de un usuario de nuestra BD
 export interface AuthUser {
@@ -67,14 +68,15 @@ export const processLogin = async (nombre: string, contrasena: string): Promise<
             codigo: validUser.Codigo,
             nombre: hexToString(validUser.Nombre),
             nombreCompleto: validUser.NombreCompleto,
-            perfil: validUser.Perfil
+            perfil: validUser.Perfil,
+            tenantId: getTenantId(),
         };
 
         // Fire and forget logging
         registrarAccion(validUser.Codigo, validUser.Perfil, 'Sistema Aula', 'Login', 'Inicio exitoso Docente/Admin').catch(console.error);
         
         return {
-            token: jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' }),
+            token: signUserToken(tokenPayload, '8h'),
             user: tokenPayload
         };
     }
@@ -104,13 +106,14 @@ export const processLogin = async (nombre: string, contrasena: string): Promise<
             codigo: student.Codigo,
             nombre: student.Nombre,
             nombreCompleto: student.NombreCompleto,
-            perfil: student.Perfil
+            perfil: student.Perfil,
+            tenantId: getTenantId(),
         };
 
         registrarAccion(student.CodigoLog, student.Perfil, 'Sistema Aula', 'Login', 'Inicio exitoso Estudiante').catch(console.error);
 
         return {
-            token: jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' }),
+            token: signUserToken(tokenPayload, '8h'),
             user: tokenPayload
         };
     }

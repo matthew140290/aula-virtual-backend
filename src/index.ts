@@ -2,7 +2,6 @@
 import express, { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import cors, { CorsOptions } from 'cors'; 
-import path from 'path';
 import cookieParser from 'cookie-parser';
 import authRoutes from './routes/auth.routes';
 import cursoRoutes from './routes/curso.routes';
@@ -21,24 +20,52 @@ import anuncioRoutes from './routes/anuncio.routes';
 import anuncioInstitucionalRoutes from './routes/anuncioInstitucional.routes';
 import auditoriaRoutes from './routes/auditoria.routes';
 import dashboardRoutes from './routes/dashboard.routes';
+import icfesGlobalRoutes from './routes/icfesGlobal.routes';
 import { errorHandler } from './middleware/error.middleware';
+import { tenantMiddleware } from './middleware/tenant.middleware';
+import { tenantManager } from './config/tenantManager';
+import {
+  assertTenantConfiguration,
+  getAllowedTenantIds,
+  normalizeTenantId,
+} from './config/tenantRegistry';
+import { assertAuthConfiguration } from './config/authToken';
 
 dotenv.config();
+assertTenantConfiguration();
+assertAuthConfiguration();
 
 
 const app = express();
 const PORT = process.env.PORT || 3002;
 
+const whitelist = (process.env.FRONTEND_ORIGINS || 'http://localhost:5173,http://localhost:5174')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-// Define las URLs que tendrán permiso para acceder a tu API
-const whitelist = ['http://localhost:3002', 'http://localhost:5173', 'http://localhost:5174'];
-// const whitelist = ['https://aula-vitual.plataformaangela.com'];
-// const whitelist = ['https://glenn.aula-virtual.plataformaangela.com'];
+const isAllowedTenantOrigin = (origin: string): boolean => {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'https:') return false;
+
+    const domain = (process.env.TENANT_FRONTEND_DOMAIN ?? 'aula-virtual.plataformaangela.com')
+      .trim()
+      .toLowerCase();
+    const suffix = `.${domain}`;
+    if (!url.hostname.toLowerCase().endsWith(suffix)) return false;
+
+    const tenantId = normalizeTenantId(url.hostname.slice(0, -suffix.length));
+    return getAllowedTenantIds().has(tenantId);
+  } catch {
+    return false;
+  }
+};
 
 const corsOptions: CorsOptions = {
   origin: (origin, callback) => {
     // La comprobación `!origin` permite peticiones sin origen (ej. Postman o apps móviles)
-    if (whitelist.indexOf(origin!) !== -1 || !origin) {
+    if (!origin || whitelist.includes(origin) || isAllowedTenantOrigin(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Acceso denegado por la política de CORS'));
@@ -46,15 +73,13 @@ const corsOptions: CorsOptions = {
   },
   credentials: true,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
+  allowedHeaders: ['Content-Type','Authorization', 'x-tenant-id']
 
 };
 
 // --- Middlewares ---
 app.use(cors(corsOptions)); 
-app.use(express.json()); 
-
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use(express.json({ limit: '1mb' }));
 
 app.use(cookieParser());
 
@@ -62,6 +87,9 @@ app.use(cookieParser());
 app.get('/api/ping', (req: Request, res: Response) => {
   res.status(200).json({ message: '¡Pong! El servidor del Aula Virtual está activo. ✨' });
 });
+
+// Middleware Multi-Tenant: aplica para TODAS las rutas /api/* excepto el ping
+app.use('/api', tenantMiddleware);
 
 // --- Rutas de la API ---
 app.use('/api/auth', authRoutes);
@@ -81,11 +109,24 @@ app.use('/api/foros', foroRoutes);
 app.use('/api/pruebas', pruebaRoutes);
 app.use('/api/auditoria', auditoriaRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/icfes-global', icfesGlobalRoutes);
 //app.use('/api/anuncio-institucionales', anuncioInstitucionalRoutes); // Asegúrate de que esta ruta esté registrada
 
 app.use(errorHandler); // Middleware de manejo de errores global, debe ir después de las rutas
 
 // Iniciar el servidor
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
 });
+
+const shutdown = (signal: NodeJS.Signals): void => {
+  console.log(`[Shutdown] ${signal} recibido. Cerrando conexiones.`);
+  server.close(() => {
+    tenantManager.closeAll()
+      .catch((error: unknown) => console.error('[Shutdown] Error cerrando pools:', error))
+      .finally(() => process.exit(0));
+  });
+};
+
+process.once('SIGTERM', shutdown);
+process.once('SIGINT', shutdown);

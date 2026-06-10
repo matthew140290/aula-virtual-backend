@@ -16,6 +16,18 @@ const parseOptionalId = (val: unknown): number | null => {
     return isNaN(parsed) ? null : parsed;
 };
 
+const validarAccesoEstudiante = async (req: Request, res: Response, recursoId: number) => {
+    if (req.user?.perfil !== 'Estudiante') return true;
+
+    const puedeAcceder = await recursoService.estudiantePuedeAccederRecurso(recursoId, Number(req.user.codigo));
+    if (!puedeAcceder) {
+        res.status(404).json({ message: 'Recurso no encontrado.' });
+        return false;
+    }
+
+    return true;
+};
+
 export const addRecursoUrl = asyncHandler(async (req: Request, res: Response) => {
     await recursoService.createRecursoUrl(req.body, getActor(req));
     res.status(201).json({ message: 'Recurso URL creado con éxito.' });
@@ -29,6 +41,9 @@ export const addRecursoAnuncio = asyncHandler(async (req: Request, res: Response
 export const getRecursoById = asyncHandler(async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10);
     const recurso = await recursoService.findRecursoById(id);
+
+    if (!(await validarAccesoEstudiante(req, res, id))) return;
+
     res.status(200).json(recurso);
 });
 
@@ -59,10 +74,22 @@ export const cloneRecurso = asyncHandler(async (req: Request, res: Response) => 
 export const registrarVistaRecurso = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.id);
     const matriculaNo = req.user?.codigo; 
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
+
     if (matriculaNo) {
         await recursoService.registrarVista(recursoId, matriculaNo);
     }
     res.sendStatus(204); 
+});
+
+export const getVistasRecurso = asyncHandler(async (req: Request, res: Response) => {
+    const recursoId = Number(req.params.id);
+    if (!Number.isFinite(recursoId)) {
+        return res.status(400).json({ message: 'ID de recurso inválido.' });
+    }
+
+    const vistas = await recursoService.findVistasByRecursoId(recursoId);
+    res.status(200).json(vistas);
 });
 
 // ==========================================
@@ -148,6 +175,7 @@ export const createImagenFromUrl = asyncHandler(async (req: Request, res: Respon
 export const uploadArchivosCarpeta = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
     if (!Number.isFinite(recursoId)) throw new Error('recursoId inválido');
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
 
     const folderId = parseOptionalId(req.body.folderId);
     const archivos = req.files as Express.Multer.File[] || [];
@@ -172,6 +200,7 @@ export const getAdjuntoTarea = asyncHandler(async (req: Request, res: Response) 
     if (!archivo || !archivo.ArchivoData) {
         return res.status(404).json({ message: 'Archivo no encontrado.' });
     }
+    if (!(await validarAccesoEstudiante(req, res, archivo.RecursoID))) return;
 
     res.setHeader('Cache-Control', 'public, max-age=86400'); 
     res.setHeader('Content-Type', archivo.ArchivoMimeType);
@@ -181,6 +210,8 @@ export const getAdjuntoTarea = asyncHandler(async (req: Request, res: Response) 
 
 export const getAdjuntoForo = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
+
     const archivo = await recursoService.findAdjuntoForoById(recursoId);
 
     if (!archivo || !archivo.AdjuntoData) {
@@ -193,6 +224,8 @@ export const getAdjuntoForo = asyncHandler(async (req: Request, res: Response) =
 
 export const getRecursoArchivoData = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
+
     const archivo = await recursoService.findRecursoArchivoDataById(recursoId);
 
     if (!archivo || !archivo.ArchivoData) {
@@ -206,6 +239,7 @@ export const getRecursoArchivoData = asyncHandler(async (req: Request, res: Resp
 export const streamImagen = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
     if (!Number.isFinite(recursoId)) throw new Error('recursoId inválido');
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
 
     const item = await recursoService.getImagenBinaryByRecursoId(recursoId);
     
@@ -228,6 +262,7 @@ export const downloadArchivoCarpeta = asyncHandler(async (req: Request, res: Res
     if (!row || !row.ArchivoData) {
         return res.status(404).send('El archivo no existe o no tiene contenido.');
     }
+    if (!(await validarAccesoEstudiante(req, res, row.RecursoID))) return;
 
     res.setHeader('Content-Type', row.ArchivoMimeType || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(row.NombreOriginal)}"`);
@@ -300,6 +335,7 @@ export const createCarpeta = asyncHandler(async (req: Request, res: Response) =>
 export const createSubFolder = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
     if (isNaN(recursoId)) throw new Error("ID de recurso inválido");
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
 
     const { nombre, parentId } = req.body;
     if (!nombre || typeof nombre !== 'string' || !nombre.trim()) throw new Error("El nombre de la carpeta es obligatorio.");
@@ -310,6 +346,8 @@ export const createSubFolder = asyncHandler(async (req: Request, res: Response) 
 
 export const createLinkInFolder = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
+
     const folderId = parseOptionalId(req.body.folderId);
     const { titulo, url } = req.body;
 
@@ -322,6 +360,7 @@ export const createLinkInFolder = asyncHandler(async (req: Request, res: Respons
 export const getArchivosCarpeta = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
     if (!Number.isFinite(recursoId)) throw new Error('recursoId inválido');
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
     
     const rows = await recursoService.listArchivosCarpeta(recursoId);
     res.json(rows);
@@ -330,6 +369,7 @@ export const getArchivosCarpeta = asyncHandler(async (req: Request, res: Respons
 export const getContenidoCarpeta = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
     if (isNaN(recursoId)) throw new Error("ID de recurso inválido");
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
 
     const folderId = parseOptionalId(req.query.folderId);
     const contenido = await recursoService.getContenidoCarpeta(recursoId, folderId);
@@ -360,6 +400,8 @@ export const deleteLinkInFolder = asyncHandler(async (req: Request, res: Respons
 
 export const moveItemInFolder = asyncHandler(async (req: Request, res: Response) => {
     const recursoId = Number(req.params.recursoId);
+    if (!(await validarAccesoEstudiante(req, res, recursoId))) return;
+
     const { tipo, itemId, targetFolderId } = req.body;
 
     if (!['archivo', 'enlace'].includes(tipo)) throw new Error("Tipo inválido");

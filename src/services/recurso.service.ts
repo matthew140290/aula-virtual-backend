@@ -3,6 +3,7 @@ import sql from 'mssql';
 import fs from 'fs/promises'; // Importación crítica para manejar los archivos en disco
 import { poolPromise } from '../config/dbPool';
 import { registrarAccion } from './log.service';
+import { isSqlErrorLike } from '../utils/errors';
 import * as notificacionService from './notificacion.service';
 
 // ==========================================
@@ -103,6 +104,12 @@ export interface RecursoForoPayload {
     modoForo: 'Normal' | 'PreguntaRespuesta';
     permitirPublicacionTardia: boolean;
     whatsappTarget?: 'NONE' | 'STUDENT_ONLY' | 'GUARDIAN_ONLY' | 'BOTH';
+}
+
+export interface RecursoVistaEstudiante {
+    matriculaNo: number;
+    nombreCompleto: string;
+    fechaVista: string;
 }
 
 export interface PruebaResourcePayload {
@@ -211,6 +218,34 @@ const cleanUpFiles = async (files: Express.Multer.File | Express.Multer.File[] |
     }
 };
 
+export const estudiantePuedeAccederRecurso = async (recursoId: number, matriculaNo: number): Promise<boolean> => {
+    if (!Number.isFinite(recursoId) || !Number.isFinite(matriculaNo)) return false;
+
+    const pool = await poolPromise;
+    const result = await pool.request()
+        .input('recursoId', sql.Int, recursoId)
+        .input('matriculaNo', sql.Int, Math.abs(matriculaNo))
+        .query<{ recursoExiste: number; esPersonalizado: number; permitido: number }>(`
+            SELECT
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM Virtual.Recursos r WHERE r.RecursoID = @recursoId
+                ) THEN 1 ELSE 0 END AS recursoExiste,
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = @recursoId
+                ) THEN 1 ELSE 0 END AS esPersonalizado,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM Virtual.RecursosEstudiantes re
+                    WHERE re.RecursoID = @recursoId
+                      AND ABS(re.MatriculaNo) = @matriculaNo
+                ) THEN 1 ELSE 0 END AS permitido;
+        `);
+
+    const row = result.recordset[0];
+    if (!row || row.recursoExiste !== 1) return false;
+    return row.esPersonalizado !== 1 || row.permitido === 1;
+};
+
 // ==========================================
 // SERVICIOS CORE
 // ==========================================
@@ -259,8 +294,8 @@ export const createRecursoImagen = async (data: CreateImagenBinaryPayload, actor
 
         if (data.esPersonalizado && data.estudiantesIds?.length) {
             const t = new sql.Table('Virtual.RecursosEstudiantes');
-            t.columns.add('RecursoID', sql.Int);
-            t.columns.add('MatriculaNo', sql.Int);
+            t.columns.add('RecursoID', sql.Int, { nullable: false });
+            t.columns.add('MatriculaNo', sql.Int, { nullable: false });
             data.estudiantesIds.forEach(id => t.rows.add(newRecursoId, id));
             await new sql.Request(tx).bulk(t);
         }
@@ -520,8 +555,8 @@ export const createRecursoForo = async (data: RecursoForoPayload, archivo: Expre
 
         if (data.esPersonalizado && data.estudiantesIds.length > 0) {
             const studentTable = new sql.Table('Virtual.RecursosEstudiantes');
-            studentTable.columns.add('RecursoID', sql.Int);
-            studentTable.columns.add('MatriculaNo', sql.Int);
+            studentTable.columns.add('RecursoID', sql.Int, { nullable: false });
+            studentTable.columns.add('MatriculaNo', sql.Int, { nullable: false });
             for (const studentId of data.estudiantesIds) {
                 studentTable.rows.add(newRecursoId, studentId);
             }
@@ -649,8 +684,8 @@ export const createRecursoImagenExterna = async (
             
         if (data.esPersonalizado && data.estudiantesIds?.length) {
             const t = new sql.Table('Virtual.RecursosEstudiantes');
-            t.columns.add('RecursoID', sql.Int);
-            t.columns.add('MatriculaNo', sql.Int);
+            t.columns.add('RecursoID', sql.Int, { nullable: false });
+            t.columns.add('MatriculaNo', sql.Int, { nullable: false });
             data.estudiantesIds.forEach(id => t.rows.add(newRecursoId, id));
             await new sql.Request(tx).bulk(t);
         }
@@ -713,8 +748,8 @@ export const createRecursoUrl = async (data: RecursoUrlPayload, actor?: UserActo
 
         if (data.esPersonalizado && data.estudiantesIds.length > 0) {
             const studentTable = new sql.Table('Virtual.RecursosEstudiantes');
-            studentTable.columns.add('RecursoID', sql.Int);
-            studentTable.columns.add('MatriculaNo', sql.Int);
+            studentTable.columns.add('RecursoID', sql.Int, { nullable: false });
+            studentTable.columns.add('MatriculaNo', sql.Int, { nullable: false });
 
             for (const studentId of data.estudiantesIds) {
                 studentTable.rows.add(newRecursoId, studentId);
@@ -833,6 +868,14 @@ export const findRecursoById = async (recursoId: number) => {
                 r.FechaCreacion as fechaCreacion,
                 r.Visible,
                 r.Orden,
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID
+                ) THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END as esPersonalizado,
+                (
+                    SELECT STRING_AGG(CONVERT(varchar(20), ABS(re.MatriculaNo)), ',')
+                    FROM Virtual.RecursosEstudiantes re
+                    WHERE re.RecursoID = r.RecursoID
+                ) as estudiantesIds,
                 
                 a.Nombre as apartadoNombre,
                 s.Nombre as semanaNombre,
@@ -895,7 +938,26 @@ export const findRecursoById = async (recursoId: number) => {
     if (result.recordset.length === 0) {
         throw new Error('Recurso no encontrado');
     }
-    return result.recordset[0];
+
+    const recurso = result.recordset[0];
+    const estudiantesIds = typeof recurso.estudiantesIds === 'string'
+        ? recurso.estudiantesIds
+            .split(',')
+            .map((id: string) => Number(id))
+            .filter((id: number) => Number.isFinite(id))
+        : [];
+
+    return {
+        ...recurso,
+        esPersonalizado: !!recurso.esPersonalizado,
+        estudiantesIds,
+        tieneAdjunto: !!recurso.tieneAdjuntoForo,
+        DuracionMinutos: recurso.duracionMinutos,
+        NumeroIntentos: recurso.numeroIntentos,
+        Contrasena: recurso.contrasena,
+        ModoRevision: recurso.modoRevision,
+        Publicado: !!recurso.publicado,
+    };
 };
 
 export const updateRecursoById = async (recursoId: number, data: RecursoUpdatePayload, actor?: UserActor) => {
@@ -926,14 +988,16 @@ export const updateRecursoById = async (recursoId: number, data: RecursoUpdatePa
 
         if (tipoRecurso === 'Tarea') {
             await reqSpecific
-                .input('fechaVencimiento', sql.DateTime, data.fechaCierre ? new Date(data.fechaCierre) : null) 
+                .input('fechaInicio', sql.DateTime, data.fechaInicio ? new Date(data.fechaInicio) : null)
+                .input('fechaVencimiento', sql.DateTime, data.fechaCierre ? new Date(data.fechaCierre) : null)
                 .input('puntaje', sql.Decimal(5, 2), data.puntajeMaximo)
                 .input('tardias', sql.Bit, data.permiteEntregasTardias)
                 .input('archivos', sql.NVarChar(1024), data.tiposArchivoPermitidos)
                 .query(`
-                    UPDATE Virtual.Tareas 
-                    SET FechaVencimiento = @fechaVencimiento, 
-                        PuntajeMaximo = @puntaje, 
+                    UPDATE Virtual.Tareas
+                    SET FechaInicio = @fechaInicio,
+                        FechaVencimiento = @fechaVencimiento,
+                        PuntajeMaximo = @puntaje,
                         PermiteEntregasTardias = @tardias,
                         TiposArchivoPermitidos = @archivos
                     WHERE RecursoID = @recursoId
@@ -1142,9 +1206,9 @@ export const deleteRecursoById = async (recursoId: number, actor?: UserActor) =>
         if (actor) {
             await registrarAccion(actor.codigo, actor.perfil, 'Aula Virtual', 'Gestión de Recursos', `Eliminó el recurso '${titulo}' (Tipo: ${tipo}, ID: ${recursoId}) y todo su contenido asociado.`);
         }
-    } catch (err: any) {
+    } catch (err: unknown) {
         await transaction.rollback();
-        if (err.number === 547) {
+        if (isSqlErrorLike(err) && err.number === 547) {
             throw new Error(`No se pudo eliminar el recurso debido a una dependencia de datos no controlada. Detalle técnico: ${err.message}`);
         }
         throw err;
@@ -1239,16 +1303,87 @@ export const registrarVista = async (recursoId: number, matriculaNo: number) => 
                     SET vistas = ISNULL(vistas, 0) + 1 
                     WHERE RecursoID = @recursoId;
                 `);
+        } else {
+            await new sql.Request(tx)
+                .input('recursoId', sql.Int, recursoId)
+                .input('matriculaNo', sql.Int, matriculaNo)
+                .query(`
+                    UPDATE Virtual.VistasRecursos
+                    SET FechaVista = GETDATE()
+                    WHERE RecursoID = @recursoId AND MatriculaNo = @matriculaNo;
+                `);
         }
 
         await tx.commit();
-    } catch (error: any) {
+    } catch (error: unknown) {
         await tx.rollback();
-        if (error.number !== 2627) {
-            console.error('[Error Crítico] al registrar vista:', error);
-            throw error; 
+        if (isSqlErrorLike(error) && error.number === 2627) {
+            await pool.request()
+                .input('recursoId', sql.Int, recursoId)
+                .input('matriculaNo', sql.Int, matriculaNo)
+                .query(`
+                    UPDATE Virtual.VistasRecursos
+                    SET FechaVista = GETDATE()
+                    WHERE RecursoID = @recursoId AND MatriculaNo = @matriculaNo;
+                `);
+            return;
         }
+
+        console.error('[Error Crítico] al registrar vista:', error);
+        throw error;
     }
+};
+
+export const findVistasByRecursoId = async (recursoId: number): Promise<RecursoVistaEstudiante[]> => {
+    const pool = await poolPromise;
+
+    const recursoExists = await pool.request()
+        .input('recursoId', sql.Int, recursoId)
+        .query<{ exists: number }>('SELECT 1 as [exists] FROM Virtual.Recursos WHERE RecursoID = @recursoId');
+
+    if (recursoExists.recordset.length === 0) {
+        throw new Error('Recurso no encontrado.');
+    }
+
+    const result = await pool.request()
+        .input('recursoId', sql.Int, recursoId)
+        .query<RecursoVistaEstudiante>(`
+            WITH vistas_unicas AS (
+                SELECT
+                    vr.MatriculaNo,
+                    MAX(vr.FechaVista) AS FechaVista
+                FROM Virtual.VistasRecursos vr
+                WHERE vr.RecursoID = @recursoId
+                GROUP BY vr.MatriculaNo
+            )
+            SELECT
+                vu.MatriculaNo as matriculaNo,
+                CASE
+                    WHEN e.MatrículaNo IS NULL THEN CONCAT('Estudiante ', vu.MatriculaNo)
+                    ELSE LTRIM(RTRIM(CONCAT(
+                        ISNULL(e.PrimerApellido, ''), ' ',
+                        ISNULL(e.SegundoApellido, ''), ' ',
+                        ISNULL(e.PrimerNombre, ''), ' ',
+                        ISNULL(e.SegundoNombre, '')
+                    )))
+                END as nombreCompleto,
+                CONVERT(varchar(19), vu.FechaVista, 120) as fechaVista
+            FROM vistas_unicas vu
+            LEFT JOIN dbo.Estudiantes e ON ABS(e.MatrículaNo) = ABS(vu.MatriculaNo)
+            WHERE (e.MatrículaNo IS NULL OR e.Estado IS NULL OR e.Estado != 'Retirado')
+              AND (
+                  NOT EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = @recursoId)
+                  OR EXISTS (
+                      SELECT 1
+                      FROM Virtual.RecursosEstudiantes re
+                      WHERE re.RecursoID = @recursoId
+                        AND ABS(re.MatriculaNo) = ABS(vu.MatriculaNo)
+                  )
+              )
+            ORDER BY vu.FechaVista DESC, nombreCompleto ASC;
+        `);
+
+    return result.recordset;
 };
 
 // ... OTROS RECURSOS ESPECÍFICOS ...
@@ -1272,7 +1407,12 @@ export const findAdjuntoTareaById = async (archivoId: number) => {
     const pool = await poolPromise;
     const result = await pool.request()
         .input('archivoId', sql.Int, archivoId)
-        .query<{ ArchivoData: Buffer, ArchivoMimeType: string, NombreOriginal: string }>('SELECT ArchivoData, ArchivoMimeType, NombreOriginal FROM Virtual.ArchivosTarea WHERE ArchivoTareaID = @archivoId');
+        .query<{ ArchivoData: Buffer, ArchivoMimeType: string, NombreOriginal: string, RecursoID: number }>(`
+            SELECT at.ArchivoData, at.ArchivoMimeType, at.NombreOriginal, t.RecursoID
+            FROM Virtual.ArchivosTarea at
+            INNER JOIN Virtual.Tareas t ON t.TareaID = at.TareaID
+            WHERE at.ArchivoTareaID = @archivoId
+        `);
     return result.recordset[0];
 };
 
@@ -1345,18 +1485,18 @@ export const createRecursoPrueba = async (data: PruebaResourcePayload, actor?: U
             .input('fechaCierre', sql.DateTime, fechaCierre)
             .query<{ PruebaID: number }>(`
                 INSERT INTO Virtual.Pruebas 
-                (RecursoID, TipoPrueba, TipoExamen, DuracionMinutos, Contrasena, ModoRevision, NumeroIntentos, FechaInicio, FechaCierre, Publicado)
+                (RecursoID, TipoPrueba, TipoExamen, DuracionMinutos, Contrasena, ModoRevision, NumeroIntentos, FechaInicio, FechaCierre, Publicado, Finalizada)
                 OUTPUT INSERTED.PruebaID
                 VALUES 
-                (@recursoId, @tipoPrueba, @tipoExamen, @duracionMinutos, @contrasena, @modoRevision, @numeroIntentos, @fechaInicio, @fechaCierre, 0);
+                (@recursoId, @tipoPrueba, @tipoExamen, @duracionMinutos, @contrasena, @modoRevision, @numeroIntentos, @fechaInicio, @fechaCierre, 0, 0);
             `);
             
         const newPruebaId = pruebaResult.recordset[0].PruebaID;
         
         if (data.esPersonalizado && data.estudiantesIds && data.estudiantesIds.length > 0) {
             const studentTable = new sql.Table('Virtual.RecursosEstudiantes');
-            studentTable.columns.add('RecursoID', sql.Int);
-            studentTable.columns.add('MatriculaNo', sql.Int);
+            studentTable.columns.add('RecursoID', sql.Int, { nullable: false });
+            studentTable.columns.add('MatriculaNo', sql.Int, { nullable: false });
             for (const studentId of data.estudiantesIds) {
                 studentTable.rows.add(newRecursoId, studentId);
             }
@@ -1441,8 +1581,8 @@ export const createRecursoVideoconferencia = async (data: VideoconfPayload, acto
 
         if (data.esPersonalizado && data.estudiantesIds?.length > 0) {
             const studentTable = new sql.Table('Virtual.RecursosEstudiantes');
-            studentTable.columns.add('RecursoID', sql.Int);
-            studentTable.columns.add('MatriculaNo', sql.Int);
+            studentTable.columns.add('RecursoID', sql.Int, { nullable: false });
+            studentTable.columns.add('MatriculaNo', sql.Int, { nullable: false });
             for (const id of data.estudiantesIds) {
                 studentTable.rows.add(newRecursoId, id);
             }
@@ -1505,8 +1645,8 @@ export const createRecursoVideo = async (data: VideoResourcePayload, actor?: Use
 
         if (data.esPersonalizado && data.estudiantesIds?.length) {
             const t = new sql.Table('Virtual.RecursosEstudiantes');
-            t.columns.add('RecursoID', sql.Int);
-            t.columns.add('MatriculaNo', sql.Int);
+            t.columns.add('RecursoID', sql.Int, { nullable: false });
+            t.columns.add('MatriculaNo', sql.Int, { nullable: false });
             data.estudiantesIds.forEach(id => t.rows.add(newRecursoId, id));
             await new sql.Request(tx).bulk(t);
         }
@@ -1565,8 +1705,8 @@ export const createRecursoCarpeta = async (data: RecursoCarpetaPayload, actor?: 
 
         if (data.esPersonalizado && data.estudiantesIds?.length) {
             const t = new sql.Table('Virtual.RecursosEstudiantes');
-            t.columns.add('RecursoID', sql.Int);
-            t.columns.add('MatriculaNo', sql.Int);
+            t.columns.add('RecursoID', sql.Int, { nullable: false });
+            t.columns.add('MatriculaNo', sql.Int, { nullable: false });
             data.estudiantesIds.forEach(id => t.rows.add(newRecursoId, id));
             await new sql.Request(tx).bulk(t);
         }
@@ -1689,7 +1829,7 @@ export const getArchivoCarpetaById = async (archivoCarpetaId: number) => {
     const pool = await poolPromise;
     const rs = await pool.request()
         .input('id', sql.Int, archivoCarpetaId)
-        .query<{ ArchivoData: Buffer, ArchivoMimeType: string, NombreOriginal: string }>(`
+        .query<{ ArchivoData: Buffer, ArchivoMimeType: string, NombreOriginal: string, RecursoID: number }>(`
         SELECT ArchivoCarpetaID, RecursoID, NombreOriginal, ArchivoData, ArchivoMimeType, TamanoKB, FechaSubida
         FROM Virtual.ArchivosCarpeta
         WHERE ArchivoCarpetaID = @id;
@@ -1834,9 +1974,9 @@ export const deleteSubCarpeta = async (subCarpetaId: number, actor?: UserActor) 
             await registrarAccion(actor.codigo, actor.perfil, 'Aula Virtual', 'Carpetas', `Eliminó subcarpeta "${nombreCarpeta}" y su contenido.`);
         }
 
-    } catch (e: any) {
+    } catch (e: unknown) {
         await tx.rollback();
-        if (e.number === 547) { 
+        if (isSqlErrorLike(e) && e.number === 547) {
             throw new Error("No se pudo eliminar la carpeta debido a restricciones de integridad.");
         }
         throw e;

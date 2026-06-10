@@ -47,6 +47,14 @@ export interface Respuesta {
     TextoRespuestaPar?: string | null;
 }
 
+export interface PreguntaBanco {
+    PreguntaBancoID: number;
+    TextoPregunta: string;
+    TipoPregunta: TipoPregunta;
+    Respuestas: Respuesta[];
+    FechaCreacion: Date;
+}
+
 export interface SimulacroInfo {
   SimulacroID: number;
   PruebaID: number;
@@ -61,7 +69,7 @@ export interface PruebaResultado {
   PruebaID: number;
   MatriculaNo: number;
   FechaEntrega: Date | null;
-  Estado: 'Entregado' | 'Pendiente' | 'Calificado';
+  Estado: 'Iniciado' | 'Entregado' | 'Pendiente' | 'Calificado';
   CalificacionFinal: number;
   RequiereCalificacionManual: boolean;
   RespuestaEnsayo: string | null;
@@ -90,7 +98,7 @@ interface PruebaResultadoDBRow {
     PruebaID: number;
     MatriculaNo: number;
     FechaEntrega: Date | null;
-    Estado: 'Entregado' | 'Pendiente' | 'Calificado';
+    Estado: 'Iniciado' | 'Entregado' | 'Pendiente' | 'Calificado';
     CalificacionFinal: number;
     RequiereCalificacionManual: boolean;
     RespuestaEnsayo: string | null;
@@ -121,9 +129,312 @@ interface PruebaConfigPayload {
     estudiantesIds?: number[];
 }
 
-export const iniciarPrueba = async (pruebaId: number, matriculaNo: number) => {
+interface BancoPreguntaRow {
+    PreguntaBancoID: number;
+    TextoPregunta: string;
+    TipoPregunta: TipoPregunta;
+    FechaCreacion: Date;
+}
+
+interface BancoRespuestaRow {
+    PreguntaBancoID: number;
+    RespuestaID: number;
+    TextoRespuesta: string;
+    TextoRespuestaPar: string | null;
+    EsCorrecta: boolean;
+}
+
+interface RespuestaRow {
+  RespuestaID: number;
+  TextoRespuesta: string;
+  TextoRespuestaPar: string | null;
+  EsCorrecta: boolean;
+}
+
+interface PruebaDetalleOptions {
+  includeAnswers?: boolean;
+  includeSecret?: boolean;
+  viewerMatriculaNo?: number;
+}
+
+interface PreguntaConRespuestaRow {
+  PreguntaID: number;
+  TextoPregunta: string;
+  TipoPregunta: TipoPregunta;
+  Porcentaje: number;
+  RespuestaID: number | null;
+  TextoRespuesta: string | null;
+  EsCorrecta: boolean | null;
+  TextoRespuestaPar: string | null;
+}
+
+interface RespuestaRelacionRow {
+  leftId: number;
+  rightText?: string;
+}
+
+interface RevisionDetalle {
+  PreguntaID: number;
+  TextoPregunta: string;
+  TipoPregunta: string;
+  EsCorrecta: boolean;
+  PuntajeObtenido: number;
+  RespuestaEstudiante: {
+    PreguntaID: number;
+    Tipo: string;
+    SelectedId?: number;
+    SelectedIds?: number[];
+    Pairs?: RespuestaRelacionRow[];
+    Texto?: string;
+  };
+  Opciones: Array<{
+    RespuestaID: number | null;
+    TextoRespuesta: string | null;
+    EsCorrecta?: boolean;
+    TextoRespuestaPar?: string | null;
+  }>;
+}
+
+const HEARTBEAT_INTERVAL_SECONDS = 15;
+const HEARTBEAT_TIMEOUT_SECONDS = 60;
+
+const ensurePruebaResultadosSessionSchema = async () => {
+  const pool = await poolPromise;
+  await pool.request().query(`
+    IF COL_LENGTH('Virtual.PruebasResultados', 'UltimoHeartbeat') IS NULL
+    BEGIN
+      ALTER TABLE Virtual.PruebasResultados
+      ADD UltimoHeartbeat DATETIME NULL;
+    END;
+
+    IF COL_LENGTH('Virtual.PruebasResultados', 'AbandonadoPorInactividad') IS NULL
+    BEGIN
+      ALTER TABLE Virtual.PruebasResultados
+      ADD AbandonadoPorInactividad BIT NOT NULL CONSTRAINT DF_PruebasResultados_Abandono DEFAULT 0;
+    END;
+  `);
+};
+
+const expirarIntentosInactivos = async (pruebaId?: number) => {
+  await ensurePruebaResultadosSessionSchema();
+
+  const pool = await poolPromise;
+  const request = pool.request()
+    .input('timeoutSegundos', sql.Int, HEARTBEAT_TIMEOUT_SECONDS);
+
+  let filtro = '';
+  if (Number.isFinite(pruebaId)) {
+    request.input('pruebaId', sql.Int, Number(pruebaId));
+    filtro = 'AND r.PruebaID = @pruebaId';
+  }
+
+  await request.query(`
+    UPDATE r
+    SET
+      r.Estado = 'Entregado',
+      r.CalificacionFinal = 0,
+      r.RequiereCalificacionManual = 0,
+      r.FechaEntrega = ISNULL(r.FechaEntrega, GETDATE()),
+      r.AbandonadoPorInactividad = 1
+    FROM Virtual.PruebasResultados r
+    WHERE r.Estado = 'Iniciado'
+      ${filtro}
+      AND DATEDIFF(
+        SECOND,
+        ISNULL(r.UltimoHeartbeat, ISNULL(r.FechaEntrega, GETDATE())),
+        GETDATE()
+      ) >= @timeoutSegundos;
+  `);
+};
+
+const TIPOS_PREGUNTA_VALIDOS: readonly TipoPregunta[] = [
+  'SeleccionUnica',
+  'SeleccionMultiple',
+  'VerdaderoFalso',
+  'Relacionar',
+  'Ensayo',
+];
+
+const ensureBancoPreguntasSchema = async () => {
+  const pool = await poolPromise;
+  await pool.request().query(`
+    IF OBJECT_ID('Virtual.BancoPreguntas', 'U') IS NULL
+    BEGIN
+      CREATE TABLE Virtual.BancoPreguntas (
+        PreguntaBancoID INT IDENTITY(1,1) PRIMARY KEY,
+        TextoPregunta NVARCHAR(MAX) NOT NULL,
+        TipoPregunta NVARCHAR(50) NOT NULL,
+        CreadoPorCodigo INT NULL,
+        CreadoPorPerfil NVARCHAR(50) NULL,
+        FechaCreacion DATETIME NOT NULL DEFAULT GETDATE(),
+        Activo BIT NOT NULL DEFAULT 1
+      );
+      CREATE INDEX IX_BancoPreguntas_FechaCreacion ON Virtual.BancoPreguntas(FechaCreacion DESC);
+    END;
+
+    IF OBJECT_ID('Virtual.BancoPreguntasRespuestas', 'U') IS NULL
+    BEGIN
+      CREATE TABLE Virtual.BancoPreguntasRespuestas (
+        RespuestaBancoID INT IDENTITY(1,1) PRIMARY KEY,
+        PreguntaBancoID INT NOT NULL,
+        TextoRespuesta NVARCHAR(MAX) NULL,
+        TextoRespuestaPar NVARCHAR(MAX) NULL,
+        EsCorrecta BIT NOT NULL DEFAULT 0,
+        Orden SMALLINT NOT NULL DEFAULT 1,
+        CONSTRAINT FK_BancoPreguntasRespuestas_Pregunta FOREIGN KEY (PreguntaBancoID)
+          REFERENCES Virtual.BancoPreguntas(PreguntaBancoID) ON DELETE CASCADE
+      );
+      CREATE INDEX IX_BancoPreguntasRespuestas_PreguntaID ON Virtual.BancoPreguntasRespuestas(PreguntaBancoID, Orden);
+    END;
+  `);
+};
+
+const validarPreguntaBanco = (pregunta: Omit<Pregunta, 'PreguntaID' | 'Porcentaje'>) => {
+  const texto = String(pregunta.TextoPregunta || '').trim();
+  if (!texto) {
+    throw new Error('El enunciado de la pregunta es obligatorio.');
+  }
+
+  if (!TIPOS_PREGUNTA_VALIDOS.includes(pregunta.TipoPregunta)) {
+    throw new Error('Tipo de pregunta no soportado.');
+  }
+
+  if (pregunta.TipoPregunta === 'Ensayo') {
+    return;
+  }
+
+  if (!Array.isArray(pregunta.Respuestas) || pregunta.Respuestas.length === 0) {
+    throw new Error('La pregunta debe incluir al menos una respuesta.');
+  }
+
+  const respuestasInvalidas = pregunta.Respuestas.some((respuesta) => {
+    const textoRespuesta = String(respuesta.TextoRespuesta || '').trim();
+    if (!textoRespuesta) return true;
+
+    if (pregunta.TipoPregunta === 'Relacionar') {
+      return !String(respuesta.TextoRespuestaPar || '').trim();
+    }
+
+    return false;
+  });
+
+  if (respuestasInvalidas) {
+    throw new Error('Todas las respuestas del banco deben tener contenido válido.');
+  }
+
+  const tieneCorrecta = pregunta.Respuestas.some((respuesta) => Boolean(respuesta.EsCorrecta));
+  if (!tieneCorrecta) {
+    throw new Error('Debes marcar al menos una respuesta correcta.');
+  }
+};
+
+export const getBancoPreguntas = async (): Promise<PreguntaBanco[]> => {
+  await ensureBancoPreguntasSchema();
+  const pool = await poolPromise;
+
+  const preguntasResult = await pool.request().query<BancoPreguntaRow>(`
+    SELECT PreguntaBancoID, TextoPregunta, TipoPregunta, FechaCreacion
+    FROM Virtual.BancoPreguntas
+    WHERE Activo = 1
+    ORDER BY FechaCreacion DESC;
+  `);
+
+  if (preguntasResult.recordset.length === 0) {
+    return [];
+  }
+
+  const respuestasResult = await pool.request().query<BancoRespuestaRow>(`
+    SELECT
+      PreguntaBancoID,
+      RespuestaBancoID as RespuestaID,
+      ISNULL(TextoRespuesta, '') as TextoRespuesta,
+      TextoRespuestaPar,
+      EsCorrecta
+    FROM Virtual.BancoPreguntasRespuestas
+    ORDER BY PreguntaBancoID, Orden, RespuestaBancoID;
+  `);
+
+  const respuestasPorPregunta = new Map<number, Respuesta[]>();
+  for (const fila of respuestasResult.recordset) {
+    const actuales = respuestasPorPregunta.get(fila.PreguntaBancoID) || [];
+    actuales.push({
+      RespuestaID: fila.RespuestaID,
+      TextoRespuesta: fila.TextoRespuesta,
+      TextoRespuestaPar: fila.TextoRespuestaPar,
+      EsCorrecta: Boolean(fila.EsCorrecta),
+    });
+    respuestasPorPregunta.set(fila.PreguntaBancoID, actuales);
+  }
+
+  return preguntasResult.recordset.map((pregunta) => ({
+    PreguntaBancoID: pregunta.PreguntaBancoID,
+    TextoPregunta: pregunta.TextoPregunta,
+    TipoPregunta: pregunta.TipoPregunta,
+    FechaCreacion: pregunta.FechaCreacion,
+    Respuestas: respuestasPorPregunta.get(pregunta.PreguntaBancoID) || [],
+  }));
+};
+
+export const addPreguntaToBanco = async (
+  pregunta: Omit<Pregunta, 'PreguntaID' | 'Porcentaje'>,
+  actor?: { codigo: number; perfil: string }
+) => {
+  validarPreguntaBanco(pregunta);
+  await ensureBancoPreguntasSchema();
+
+  const pool = await poolPromise;
+  const transaction = new sql.Transaction(pool);
+
+  try {
+    await transaction.begin();
+
+    const preguntaResult = await new sql.Request(transaction)
+      .input('textoPregunta', sql.NVarChar(sql.MAX), String(pregunta.TextoPregunta).trim())
+      .input('tipoPregunta', sql.NVarChar(50), pregunta.TipoPregunta)
+      .input('creadoPorCodigo', sql.Int, actor?.codigo ?? null)
+      .input('creadoPorPerfil', sql.NVarChar(50), actor?.perfil ?? null)
+      .query<{ PreguntaBancoID: number }>(`
+        INSERT INTO Virtual.BancoPreguntas (TextoPregunta, TipoPregunta, CreadoPorCodigo, CreadoPorPerfil)
+        OUTPUT INSERTED.PreguntaBancoID
+        VALUES (@textoPregunta, @tipoPregunta, @creadoPorCodigo, @creadoPorPerfil);
+      `);
+
+    const preguntaBancoId = preguntaResult.recordset[0].PreguntaBancoID;
+
+    if (pregunta.TipoPregunta !== 'Ensayo' && Array.isArray(pregunta.Respuestas)) {
+      let orden = 1;
+      for (const respuesta of pregunta.Respuestas) {
+        await new sql.Request(transaction)
+          .input('preguntaBancoId', sql.Int, preguntaBancoId)
+          .input('textoRespuesta', sql.NVarChar(sql.MAX), String(respuesta.TextoRespuesta || '').trim())
+          .input('textoRespuestaPar', sql.NVarChar(sql.MAX), respuesta.TextoRespuestaPar?.trim() || null)
+          .input('esCorrecta', sql.Bit, respuesta.EsCorrecta ? 1 : 0)
+          .input('orden', sql.SmallInt, orden)
+          .query(`
+            INSERT INTO Virtual.BancoPreguntasRespuestas
+              (PreguntaBancoID, TextoRespuesta, TextoRespuestaPar, EsCorrecta, Orden)
+            VALUES
+              (@preguntaBancoId, @textoRespuesta, @textoRespuestaPar, @esCorrecta, @orden);
+          `);
+        orden += 1;
+      }
+    }
+
+    await transaction.commit();
+    return { preguntaBancoId };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
+};
+
+export const iniciarPrueba = async (pruebaId: number, matriculaNo: number, contrasenaIngresada?: string) => {
+    await expirarIntentosInactivos(pruebaId);
+    await ensurePruebaResultadosSessionSchema();
+
     const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
+    const matriculaNormalizada = Math.abs(matriculaNo);
 
     try {
         await transaction.begin();
@@ -131,51 +442,80 @@ export const iniciarPrueba = async (pruebaId: number, matriculaNo: number) => {
         // 1. Validaciones de Reglas de Negocio
         const pruebaInfo = await new sql.Request(transaction)
             .input('pruebaId', sql.Int, pruebaId)
-            .query(`SELECT NumeroIntentos, FechaInicio, FechaCierre FROM Virtual.Pruebas WHERE PruebaID = @pruebaId`);
+            .query(`
+                SELECT PruebaID, RecursoID, NumeroIntentos, FechaInicio, FechaCierre, Publicado, Finalizada, Contrasena
+                FROM Virtual.Pruebas
+                WHERE PruebaID = @pruebaId
+            `);
         
+        if (pruebaInfo.recordset.length === 0) {
+            throw new Error('La prueba no existe.');
+        }
+
         const info = pruebaInfo.recordset[0];
         const now = new Date();
+
+        if (!info.Publicado) {
+            throw new Error('La prueba aún no ha sido publicada.');
+        }
+
+        const requiereContrasena = typeof info.Contrasena === 'string' && info.Contrasena.trim().length > 0;
+        if (requiereContrasena && String(contrasenaIngresada || '') !== String(info.Contrasena)) {
+            throw new Error('La contraseña de la prueba es incorrecta.');
+        }
+
+        const accesoPersonalizado = await new sql.Request(transaction)
+            .input('recursoId', sql.Int, Number(info.RecursoID))
+            .input('matriculaNo', sql.Int, Math.abs(matriculaNo))
+            .query<{ EsPersonalizado: number; Permitido: number }>(`
+                SELECT
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = @recursoId
+                    ) THEN 1 ELSE 0 END AS EsPersonalizado,
+                    CASE WHEN EXISTS (
+                        SELECT 1 FROM Virtual.RecursosEstudiantes re
+                        WHERE re.RecursoID = @recursoId AND ABS(re.MatriculaNo) = @matriculaNo
+                    ) THEN 1 ELSE 0 END AS Permitido;
+            `);
+
+        if (accesoPersonalizado.recordset[0]?.EsPersonalizado === 1 && accesoPersonalizado.recordset[0]?.Permitido !== 1) {
+            throw new Error('No tienes permisos para iniciar esta prueba.');
+        }
 
         if (now < new Date(info.FechaInicio) || now > new Date(info.FechaCierre)) {
             throw new Error('La prueba no está disponible en este momento.');
         }
 
-        // const enProgreso = await new sql.Request(transaction)
-        //     .input('pruebaId', sql.Int, pruebaId)
-        //     .input('matriculaNo', sql.Int, matriculaNo)
-        //     .query(`
-        //         SELECT TOP 1 ResultadoID 
-        //         FROM Virtual.PruebasResultados 
-        //         WHERE PruebaID = @pruebaId AND MatriculaNo = @matriculaNo AND Estado = 'Iniciado'
-        //     `);
-        
-        // if (enProgreso.recordset.length > 0) {
-        //     await transaction.commit();
-        //     // Retornamos el mismo ID para que continúe
-        //     return { resultadoId: enProgreso.recordset[0].ResultadoID, retomado: true };
-        // }
+        const enProgreso = await new sql.Request(transaction)
+            .input('pruebaId', sql.Int, pruebaId)
+            .input('matriculaNo', sql.Int, matriculaNormalizada)
+            .query<{ ResultadoID: number }>(`
+                SELECT TOP 1 ResultadoID
+                FROM Virtual.PruebasResultados
+                WHERE PruebaID = @pruebaId
+                  AND ABS(MatriculaNo) = @matriculaNo
+                  AND Estado = 'Iniciado'
+                ORDER BY ResultadoID DESC
+            `);
+
+        if (enProgreso.recordset.length > 0) {
+            await transaction.commit();
+            return { resultadoId: enProgreso.recordset[0].ResultadoID, retomado: true };
+        }
 
         // 2. Contar intentos PREVIOS (sin contar el que vamos a crear)
         const intentosPrevios = await new sql.Request(transaction)
             .input('pruebaId', sql.Int, pruebaId)
-            .input('matriculaNo', sql.Int, matriculaNo)
-            .query(`SELECT COUNT(*) as count FROM Virtual.PruebasResultados WHERE PruebaID = @pruebaId AND MatriculaNo = @matriculaNo`);
+            .input('matriculaNo', sql.Int, matriculaNormalizada)
+            .query(`
+                SELECT COUNT(*) as count
+                FROM Virtual.PruebasResultados
+                WHERE PruebaID = @pruebaId
+                  AND ABS(MatriculaNo) = @matriculaNo
+                  AND Estado IN ('Pendiente', 'Calificado', 'Entregado')
+            `);
         
         if (info.NumeroIntentos > 0 && intentosPrevios.recordset[0].count >= info.NumeroIntentos) {
-            // Verificar si hay alguno "En Progreso" que se pueda retomar
-            const enProgreso = await new sql.Request(transaction)
-                .input('pruebaId', sql.Int, pruebaId)
-                .input('matriculaNo', sql.Int, matriculaNo)
-                .query(`
-                    SELECT TOP 1 ResultadoID FROM Virtual.PruebasResultados 
-                    WHERE PruebaID = @pruebaId AND MatriculaNo = @matriculaNo AND Estado = 'Iniciado'
-                `);
-            
-            if (enProgreso.recordset.length > 0) {
-                await transaction.commit();
-                return { resultadoId: enProgreso.recordset[0].ResultadoID, retomado: true };
-            }
-            
             throw new Error('Has superado el número máximo de intentos.');
         }
 
@@ -183,14 +523,14 @@ export const iniciarPrueba = async (pruebaId: number, matriculaNo: number) => {
         // Esto "quema" el intento inmediatamente.
         const insert = await new sql.Request(transaction)
             .input('pruebaId', sql.Int, pruebaId)
-            .input('matriculaNo', sql.Int, matriculaNo)
-            .input('FechaEntrega', sql.DateTime, now) // Asegúrate de tener esta columna o usa FechaEntrega como referencia temporal
+            .input('matriculaNo', sql.Int, matriculaNormalizada)
+            .input('fechaReferencia', sql.DateTime, now)
             .query(`
                 INSERT INTO Virtual.PruebasResultados 
-                (PruebaID, MatriculaNo, FechaEntrega, Estado, CalificacionFinal, RequiereCalificacionManual)
+                (PruebaID, MatriculaNo, FechaEntrega, UltimoHeartbeat, Estado, CalificacionFinal, RequiereCalificacionManual, AbandonadoPorInactividad)
                 OUTPUT INSERTED.ResultadoID
                 VALUES 
-                (@pruebaId, @matriculaNo, GETDATE(), 'Iniciado', 0, 0); 
+                (@pruebaId, @matriculaNo, @fechaReferencia, @fechaReferencia, 'Iniciado', 0, 0, 0);
             `);
             
         const resultadoId = insert.recordset[0].ResultadoID;
@@ -206,8 +546,16 @@ export const iniciarPrueba = async (pruebaId: number, matriculaNo: number) => {
 
 export const entregarPrueba = async (
     resultadoId: number, 
-    respuestas: { PreguntaID: number, Tipo: string, SelectedId?: number, SelectedIds?: number[], Pairs?: any[], Texto?: string }[],
-    duracionSegundos: number
+    respuestas: Array<{
+      PreguntaID: number;
+      Tipo: string;
+      SelectedId?: number;
+      SelectedIds?: number[];
+      Pairs?: RespuestaRelacionRow[];
+      Texto?: string;
+    }>,
+    duracionSegundos: number,
+    matriculaNo: number
 ) => {
     const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
@@ -218,15 +566,21 @@ export const entregarPrueba = async (
         // A. Obtener datos de la prueba a través del resultadoId
         const datosPrueba = await new sql.Request(transaction)
             .input('resultadoId', sql.Int, resultadoId)
+            .input('matriculaNo', sql.Int, Math.abs(matriculaNo))
             .query(`
-                SELECT p.PruebaID, p.RecursoID, p.TipoExamen, p.FechaCierre, p.ModoRevision 
+                SELECT p.PruebaID, p.RecursoID, p.TipoExamen, p.FechaCierre, p.ModoRevision, r.Estado
                 FROM Virtual.PruebasResultados r
                 JOIN Virtual.Pruebas p ON r.PruebaID = p.PruebaID
                 WHERE r.ResultadoID = @resultadoId
+                  AND ABS(r.MatriculaNo) = @matriculaNo
             `);
 
-        if (datosPrueba.recordset.length === 0) throw new Error('Intento no encontrado.');
-        const { PruebaID, RecursoID, TipoExamen, FechaCierre, ModoRevision } = datosPrueba.recordset[0];
+        if (datosPrueba.recordset.length === 0) throw new Error('Intento no encontrado o no autorizado.');
+        const { PruebaID, RecursoID, TipoExamen, FechaCierre, ModoRevision, Estado } = datosPrueba.recordset[0];
+
+        if (Estado !== 'Iniciado') {
+            throw new Error('Este intento ya fue cerrado y no admite más envíos.');
+        }
 
         // Validar fecha de cierre con tolerancia de 5 mins (latencia de red)
         if (new Date() > new Date(new Date(FechaCierre).getTime() + 5 * 60000)) {
@@ -246,8 +600,8 @@ export const entregarPrueba = async (
             `);
 
         // Mapear preguntas para búsqueda rápida
-        const mapaPreguntas = new Map<number, { texto: string, tipo: string, peso: number, respuestas: any[] }>();
-        preguntasDB.recordset.forEach((row: any) => {
+        const mapaPreguntas = new Map<number, { texto: string; tipo: string; peso: number; respuestas: PreguntaConRespuestaRow[] }>();
+        preguntasDB.recordset.forEach((row: PreguntaConRespuestaRow) => {
             if (!mapaPreguntas.has(row.PreguntaID)) {
                 mapaPreguntas.set(row.PreguntaID, { 
                     texto: row.TextoPregunta,
@@ -256,7 +610,7 @@ export const entregarPrueba = async (
                     respuestas: [] 
                 });
             }
-            if (row.RespuestaID) {
+            if (row.RespuestaID !== null) {
                 mapaPreguntas.get(row.PreguntaID)!.respuestas.push(row);
             }
         });
@@ -266,7 +620,7 @@ export const entregarPrueba = async (
         let requiereManual = false;
         let respuestaEnsayoTexto = '';
 
-        const detalleRevision: any[] = [];
+        const detalleRevision: RevisionDetalle[] = [];
 
         const mostrarRespuestas = ModoRevision === 'VerSoloRespuestas' || ModoRevision === 'VerAmbas';
 
@@ -294,7 +648,9 @@ export const entregarPrueba = async (
                     esCorrecta = true;
                 }
             } else if (infoPregunta.tipo === 'SeleccionMultiple') {
-                const correctasIds = infoPregunta.respuestas.filter(r => r.EsCorrecta).map(r => r.RespuestaID);
+                const correctasIds = infoPregunta.respuestas
+                  .filter((r): r is PreguntaConRespuestaRow & { RespuestaID: number } => r.EsCorrecta === true && r.RespuestaID !== null)
+                  .map(r => r.RespuestaID);
                 const seleccionados = respEstudiante.SelectedIds || [];
                 // Coincidencia exacta de arrays (sin orden)
                 if (correctasIds.length === seleccionados.length && 
@@ -342,7 +698,7 @@ export const entregarPrueba = async (
                     RespuestaID: r.RespuestaID,
                     TextoRespuesta: r.TextoRespuesta,
                     // Marcamos cuál es la correcta SOLO si está permitido
-                    EsCorrecta: mostrarRespuestas ? r.EsCorrecta : undefined, 
+                    EsCorrecta: mostrarRespuestas ? Boolean(r.EsCorrecta) : undefined, 
                     TextoRespuestaPar: mostrarRespuestas ? r.TextoRespuestaPar : undefined
                 }))
             });
@@ -366,6 +722,7 @@ export const entregarPrueba = async (
                 UPDATE Virtual.PruebasResultados
                 SET 
                     FechaEntrega = @fechaEntrega,
+                    UltimoHeartbeat = @fechaEntrega,
                     Estado = @estado,
                     CalificacionFinal = @calificacion,
                     RequiereCalificacionManual = @manual,
@@ -393,8 +750,43 @@ export const entregarPrueba = async (
     }
 };
 
+export const abandonarPrueba = async (
+  pruebaId: number,
+  resultadoId: number,
+  matriculaNo: number,
+  duracionSegundos?: number
+) => {
+  await ensurePruebaResultadosSessionSchema();
+
+  const pool = await poolPromise;
+  const result = await pool.request()
+    .input('pruebaId', sql.Int, pruebaId)
+    .input('resultadoId', sql.Int, resultadoId)
+    .input('matriculaNo', sql.Int, Math.abs(matriculaNo))
+    .input('duracion', sql.Int, Number.isFinite(duracionSegundos) ? Math.max(0, Math.floor(Number(duracionSegundos))) : null)
+    .query<{ affected: number }>(`
+      UPDATE Virtual.PruebasResultados
+      SET
+        FechaEntrega = GETDATE(),
+        Estado = 'Entregado',
+        CalificacionFinal = 0,
+        RequiereCalificacionManual = 0,
+        DuracionSegundos = ISNULL(@duracion, ISNULL(DuracionSegundos, 0))
+      WHERE ResultadoID = @resultadoId
+        AND PruebaID = @pruebaId
+        AND ABS(MatriculaNo) = @matriculaNo
+        AND Estado = 'Iniciado';
+
+      SELECT @@ROWCOUNT AS affected;
+    `);
+
+  return result.recordset[0]?.affected > 0;
+};
+
 // Obtener detalles completos de una prueba
-export const getPruebaDetalles = async (id: number): Promise<PruebaDetalles | undefined> => {
+export const getPruebaDetalles = async (id: number, options: PruebaDetalleOptions = {}): Promise<PruebaDetalles | undefined> => {
+  const includeAnswers = options.includeAnswers ?? true;
+  const includeSecret = options.includeSecret ?? true;
   const pool = await poolPromise;
 
   const result = await pool.request()
@@ -414,8 +806,28 @@ export const getPruebaDetalles = async (id: number): Promise<PruebaDetalles | un
   if (result.recordset.length === 0) return undefined;
 
   const row = result.recordset[0];
+
+  if (Number.isFinite(options.viewerMatriculaNo)) {
+    const matriculaNo = Math.abs(Number(options.viewerMatriculaNo));
+    const autorizacion = await pool.request()
+      .input('pruebaId', sql.Int, Number(row.PruebaID))
+      .input('matriculaNo', sql.Int, matriculaNo)
+      .query<{ Permitido: number }>(`
+        SELECT CASE WHEN EXISTS (
+          SELECT 1
+          FROM Virtual.PruebasResultados pr
+          WHERE pr.PruebaID = @pruebaId AND ABS(pr.MatriculaNo) = @matriculaNo
+        ) THEN 1 ELSE 0 END AS Permitido;
+      `);
+
+    if (autorizacion.recordset[0]?.Permitido !== 1) {
+      return undefined;
+    }
+  }
+
   const prueba: PruebaDetalles = {
     ...row,
+    Contrasena: includeSecret ? row.Contrasena : undefined,
     FechaPublicacion: new Date(row.FechaPublicacion),
     FechaInicio: new Date(row.FechaInicio),
     FechaCierre: new Date(row.FechaCierre),
@@ -437,7 +849,7 @@ export const getPruebaDetalles = async (id: number): Promise<PruebaDetalles | un
   for (const p of preguntasResult.recordset) {
     const respuestasResult = await pool.request()
       .input('preguntaId', sql.Int, p.PreguntaID)
-      .query(`
+      .query<RespuestaRow>(`
         SELECT RespuestaID, TextoRespuesta, TextoRespuestaPar, EsCorrecta
         FROM Virtual.Pruebas_Respuestas
         WHERE PreguntaID = @preguntaId
@@ -449,16 +861,56 @@ export const getPruebaDetalles = async (id: number): Promise<PruebaDetalles | un
       TextoPregunta: p.TextoPregunta,
       TipoPregunta: p.TipoPregunta,
       Porcentaje: p.Porcentaje,
-      Respuestas: respuestasResult.recordset.map((r: any) => ({
+      Respuestas: respuestasResult.recordset.map((r: RespuestaRow) => ({
         RespuestaID: r.RespuestaID,
         TextoRespuesta: r.TextoRespuesta,
         TextoRespuestaPar: r.TextoRespuestaPar,
-        EsCorrecta: !!r.EsCorrecta
+        EsCorrecta: includeAnswers ? !!r.EsCorrecta : false
       }))
     });
   }
 
   return prueba;
+};
+
+export const heartbeatPrueba = async (
+  pruebaId: number,
+  resultadoId: number,
+  matriculaNo: number,
+  duracionSegundos?: number
+) => {
+  await ensurePruebaResultadosSessionSchema();
+  await expirarIntentosInactivos(pruebaId);
+
+  const pool = await poolPromise;
+  const result = await pool.request()
+    .input('pruebaId', sql.Int, pruebaId)
+    .input('resultadoId', sql.Int, resultadoId)
+    .input('matriculaNo', sql.Int, Math.abs(matriculaNo))
+    .input('duracion', sql.Int, Number.isFinite(duracionSegundos) ? Math.max(0, Math.floor(Number(duracionSegundos))) : null)
+    .query<{ affected: number }>(`
+      UPDATE Virtual.PruebasResultados
+      SET
+        UltimoHeartbeat = GETDATE(),
+        DuracionSegundos = CASE
+          WHEN @duracion IS NULL THEN DuracionSegundos
+          WHEN DuracionSegundos IS NULL THEN @duracion
+          WHEN @duracion > DuracionSegundos THEN @duracion
+          ELSE DuracionSegundos
+        END
+      WHERE ResultadoID = @resultadoId
+        AND PruebaID = @pruebaId
+        AND ABS(MatriculaNo) = @matriculaNo
+        AND Estado = 'Iniciado';
+
+      SELECT @@ROWCOUNT AS affected;
+    `);
+
+  return {
+    ok: result.recordset[0]?.affected > 0,
+    heartbeatIntervalSeconds: HEARTBEAT_INTERVAL_SECONDS,
+    timeoutSeconds: HEARTBEAT_TIMEOUT_SECONDS,
+  };
 };
 
 export const setPruebaFinalizada = async (pruebaId: number, finalizada: boolean) => {
@@ -723,10 +1175,13 @@ export const getEstudiantesParaPrueba = async (pruebaId: number) => {
     INNER JOIN Virtual.Recursos r
       ON r.RecursoID = p.RecursoID
     LEFT JOIN Virtual.RecursosEstudiantes re
-      ON re.RecursoID = r.RecursoID AND re.MatriculaNo = e.[MatrículaNo]
+      ON re.RecursoID = r.RecursoID AND ABS(re.MatriculaNo) = ABS(e.[MatrículaNo])
     WHERE a.[Código] = @codigoAsignatura
       AND (e.Estado IS NULL OR e.Estado <> 'Retirado')
-      AND (re.RecursoID IS NULL OR re.RecursoID = r.RecursoID) -- quita esta línea si quieres obligar a personalización
+      AND (
+        NOT EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes reScope WHERE reScope.RecursoID = r.RecursoID)
+        OR re.RecursoID IS NOT NULL
+      )
     ORDER BY e.PrimerApellido, e.PrimerNombre;
   `);
 
@@ -748,7 +1203,7 @@ export const getResultadosSimulacro = async (pruebaId: number): Promise<Simulacr
       WHERE PruebaID = @pruebaId
       ORDER BY Fecha ASC;
     `);
-  return rs.recordset.map((r: any) => ({
+  return rs.recordset.map((r: SimulacroDBRow) => ({
     SimulacroID: r.SimulacroID,
     PruebaID: r.PruebaID,
     MatriculaNo: r.MatriculaNo,
@@ -871,10 +1326,27 @@ export const createSimulacro = async (
   const pool = await poolPromise;
   const rs = await pool.request()
     .input('pruebaId', sql.Int, pruebaId)
-    .input('matriculaNo', sql.Int, matriculaNo)
+    .input('matriculaNo', sql.Int, Math.abs(matriculaNo))
     .input('cal', sql.Decimal(3, 1), calificacion ?? null)
     .input('dur', sql.Int, typeof duracionSegundos === 'number' ? duracionSegundos : null)
     .query<{ SimulacroID: number }>(`
+      IF EXISTS (
+        SELECT 1
+        FROM Virtual.Pruebas p
+        INNER JOIN Virtual.Recursos r ON r.RecursoID = p.RecursoID
+        WHERE p.PruebaID = @pruebaId
+          AND EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM Virtual.RecursosEstudiantes re
+            WHERE re.RecursoID = r.RecursoID
+              AND ABS(re.MatriculaNo) = @matriculaNo
+          )
+      )
+      BEGIN
+        THROW 51000, 'El estudiante no pertenece a la audiencia personalizada de esta prueba.', 1;
+      END;
+
       INSERT INTO Virtual.PruebasSimulacros (PruebaID, MatriculaNo, Fecha, Calificacion, DuracionSegundos)
       OUTPUT INSERTED.SimulacroID
       VALUES (@pruebaId, @matriculaNo, GETUTCDATE(), @cal, @dur);
@@ -916,8 +1388,8 @@ export const getPublicacionesByRecursoIds = async (
     `);
 
   return rs.recordset
-    .filter((r: any) => r.RecursoID != null)
-    .map((r: any) => ({
+    .filter((r: PublicacionDBRow) => r.RecursoID != null)
+    .map((r: PublicacionDBRow) => ({
       recursoId: Number(r.RecursoID),
       publicado: Boolean(r.Publicado),
     }));

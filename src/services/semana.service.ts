@@ -21,6 +21,8 @@ interface Resource {
   Publicado?: boolean;
   EsCalificable?: boolean;
   PermitirPublicacionTardia?: boolean;
+  esPersonalizado?: boolean;
+  estudiantesIds?: number[];
 }
 
 const defaultApartados = [
@@ -58,10 +60,35 @@ export const findWeeksByCourseAndPeriod = async (codigoAsignatura: number, numer
             r.UrlExterna as recurso_urlExterna,
             r.FechaCreacion as recurso_fecha_creacion,
             r.Visible as recurso_visible,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID
+            ) THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END as recurso_es_personalizado,
+            (
+                SELECT STRING_AGG(CONVERT(varchar(20), ABS(re.MatriculaNo)), ',')
+                FROM Virtual.RecursosEstudiantes re
+                WHERE re.RecursoID = r.RecursoID
+            ) as recurso_estudiantes_ids,
             
             -- Contadores
             (SELECT COUNT(*) FROM Virtual.VistasRecursos WHERE RecursoID = r.RecursoID) as recurso_vistas,
-            (SELECT COUNT(*) FROM dbo.Estudiantes se WHERE se.CódigoCurso = asig.CódigoCurso AND (se.Estado IS NULL OR se.Estado != 'Retirado')) as total_estudiantes,
+            CASE
+                WHEN EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID)
+                THEN (
+                    SELECT COUNT(DISTINCT ABS(re.MatriculaNo))
+                    FROM Virtual.RecursosEstudiantes re
+                    INNER JOIN dbo.Estudiantes se
+                        ON ABS(se.MatrículaNo) = ABS(re.MatriculaNo)
+                    WHERE re.RecursoID = r.RecursoID
+                      AND se.CódigoCurso = asig.CódigoCurso
+                      AND (se.Estado IS NULL OR se.Estado != 'Retirado')
+                )
+                ELSE (
+                    SELECT COUNT(*)
+                    FROM dbo.Estudiantes se
+                    WHERE se.CódigoCurso = asig.CódigoCurso
+                      AND (se.Estado IS NULL OR se.Estado != 'Retirado')
+                )
+            END as total_estudiantes,
             (SELECT COUNT(*) FROM Virtual.EntregasTareas et JOIN Virtual.Tareas t ON et.TareaID = t.TareaID WHERE t.RecursoID = r.RecursoID AND et.Calificacion IS NOT NULL) as total_calificadas,
             (SELECT COUNT(*) FROM Virtual.EntregasTareas et JOIN Virtual.Tareas t ON et.TareaID = t.TareaID WHERE t.RecursoID = r.RecursoID) as total_entregas,
 
@@ -101,7 +128,7 @@ export const findWeeksByCourseAndPeriod = async (codigoAsignatura: number, numer
             AND (
                 @perfil != 'Estudiante' 
                 OR NOT EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID)
-                OR EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID AND re.MatriculaNo = @usuarioId)
+                OR EXISTS (SELECT 1 FROM Virtual.RecursosEstudiantes re WHERE re.RecursoID = r.RecursoID AND ABS(re.MatriculaNo) = @usuarioId)
             )
         
         -- JOINS A TABLAS HIJAS
@@ -145,6 +172,12 @@ export const findWeeksByCourseAndPeriod = async (codigoAsignatura: number, numer
               let fechaInicio = row.t_inicio || row.p_inicio || row.f_inicio || row.v_inicio;
               let fechaCierre = row.t_fin || row.p_fin || row.f_fin || row.v_fin;
               let puntajeMaximo = row.t_puntaje || row.f_puntaje;
+              const estudiantesIds = typeof row.recurso_estudiantes_ids === 'string'
+                ? row.recurso_estudiantes_ids
+                    .split(',')
+                    .map((id: string) => Number(id))
+                    .filter((id: number) => Number.isFinite(id))
+                : [];
 
             apartado.resources.push({
                 id: row.recurso_id,
@@ -154,6 +187,8 @@ export const findWeeksByCourseAndPeriod = async (codigoAsignatura: number, numer
                 fechaCreacion: row.recurso_fecha_creacion,
                 urlExterna: row.recurso_urlExterna,
                 Visible: row.recurso_visible,
+                esPersonalizado: !!row.recurso_es_personalizado,
+                estudiantesIds,
                 vistas: row.recurso_vistas, 
                 totalEstudiantes: row.total_estudiantes,
                 totalCalificadas: row.total_calificadas,

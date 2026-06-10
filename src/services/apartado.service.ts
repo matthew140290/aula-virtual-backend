@@ -1,6 +1,6 @@
 // src/services/apartado.service.ts
 import sql from 'mssql';
-import { dbConfig } from '../config/database';
+import { poolPromise } from '../config/dbPool';
 
 
 export const createApartado = async (params: {
@@ -10,7 +10,7 @@ export const createApartado = async (params: {
 }) => {
   const { semanaId, nombre, tipoApartado = 'custom' } = params;
 
-  const pool = await sql.connect(dbConfig);
+  const pool = await poolPromise;
   const tx = new sql.Transaction(pool);
 
   try {
@@ -46,7 +46,7 @@ export const createApartado = async (params: {
 
 // OBTENER apartados de una asignatura
 export const findApartadosByAsignatura = async (codigoAsignatura: number) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     const result = await pool.request()
         .input('codigoAsignatura', sql.SmallInt, codigoAsignatura)
         .query(`
@@ -60,7 +60,7 @@ export const findApartadosByAsignatura = async (codigoAsignatura: number) => {
 
 // ACTUALIZAR nombre de un apartado
 export const updateApartadoName = async (apartadoId: number, newName: string) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     await pool.request()
         .input('apartadoId', sql.Int, apartadoId)
         .input('newName', sql.NVarChar(255), newName)
@@ -69,7 +69,7 @@ export const updateApartadoName = async (apartadoId: number, newName: string) =>
 
 // BORRAR un apartado
 export const deleteApartadoById = async (apartadoId: number) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
     try {
         await transaction.begin();
@@ -94,7 +94,7 @@ export const deleteApartadoById = async (apartadoId: number) => {
 
 // FIJAR/DESFIJAR un apartado
 export const toggleApartadoPin = async (apartadoId: number) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     await pool.request()
         .input('apartadoId', sql.Int, apartadoId)
         .query('UPDATE Virtual.Apartados SET Fijado = CASE WHEN Fijado = 1 THEN 0 ELSE 1 END WHERE ApartadoID = @apartadoId');
@@ -102,7 +102,7 @@ export const toggleApartadoPin = async (apartadoId: number) => {
 
 // CLONAR un apartado
 export const cloneApartadoById = async (apartadoId: number) => {
-    const pool = await sql.connect(dbConfig);
+    const pool = await poolPromise;
     const transaction = new sql.Transaction(pool);
     try {
         await transaction.begin();

@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Aseguramos que la carpeta temporal exista al arrancar el servidor
-const tempDir = path.join(__dirname, '../../uploads/temp');
+const tempDir = path.join(__dirname, '../uploads/temp');
 if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true });
 }
